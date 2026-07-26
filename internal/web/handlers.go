@@ -6909,7 +6909,12 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusInternalServerError, "failed to save provider settings")
 			return
 		}
-		h.logger.Info("Provider settings updated", "providers", provSettings)
+		updatedProviders := make([]string, 0, len(provSettings))
+		for name := range provSettings {
+			updatedProviders = append(updatedProviders, name)
+		}
+		sort.Strings(updatedProviders)
+		h.logger.Info("Provider settings updated", "providers", updatedProviders)
 		// Strip sensitive fields before returning to client
 		stripProviderSecrets(existing)
 		result["provider_settings"] = existing
