@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -107,6 +108,9 @@ type Config struct {
 	MetricsToken       string        // ONWATCH_METRICS_TOKEN (bearer token for /metrics endpoint)
 	SessionIdleTimeout time.Duration // ONWATCH_SESSION_IDLE_TIMEOUT (seconds → Duration)
 	BasePath           string        // ONWATCH_BASE_PATH (subdirectory hosting, e.g. "/onwatch")
+	AuthMode           string        // ONWATCH_AUTH_MODE: "local" (default) or "trusted_proxy"
+	TrustedProxyCIDRs  []string      // ONWATCH_TRUSTED_PROXY_CIDRS (comma-separated CIDRs or IPs)
+	TrustedUserHeader  string        // ONWATCH_TRUSTED_USER_HEADER (default: X-Forwarded-User)
 	DebugMode          bool          // --debug flag (foreground mode)
 	DebugStdout        bool          // --debugstdout flag (foreground + all logs to stdout)
 	TestMode           bool          // --test flag (test mode isolation)
@@ -481,6 +485,17 @@ func loadFromEnvAndFlags(flags *flagValues) (*Config, error) {
 	// Base Path (subdirectory hosting, e.g. "/onwatch")
 	cfg.BasePath = strings.TrimSpace(os.Getenv("ONWATCH_BASE_PATH"))
 
+	// Dashboard auth mode (local login vs trusted reverse proxy)
+	cfg.AuthMode = strings.ToLower(strings.TrimSpace(os.Getenv("ONWATCH_AUTH_MODE")))
+	if env := strings.TrimSpace(os.Getenv("ONWATCH_TRUSTED_PROXY_CIDRS")); env != "" {
+		for _, part := range strings.Split(env, ",") {
+			if p := strings.TrimSpace(part); p != "" {
+				cfg.TrustedProxyCIDRs = append(cfg.TrustedProxyCIDRs, p)
+			}
+		}
+	}
+	cfg.TrustedUserHeader = strings.TrimSpace(os.Getenv("ONWATCH_TRUSTED_USER_HEADER"))
+
 	// Session Idle Timeout (seconds)
 	if env := envWithFallback("ONWATCH_SESSION_IDLE_TIMEOUT", "SYNTRACK_SESSION_IDLE_TIMEOUT"); env != "" {
 		if v, err := strconv.Atoi(env); err == nil {
@@ -560,6 +575,12 @@ func (c *Config) applyDefaults() {
 	if c.SessionIdleTimeout == 0 {
 		c.SessionIdleTimeout = 600 * time.Second
 	}
+	if c.AuthMode == "" {
+		c.AuthMode = AuthModeLocal
+	}
+	if c.TrustedUserHeader == "" {
+		c.TrustedUserHeader = "X-Forwarded-User"
+	}
 	if c.APIIntegrationsDir == "" {
 		if c.IsDockerEnvironment() {
 			c.APIIntegrationsDir = "/data/api-integrations"
@@ -572,6 +593,39 @@ func (c *Config) applyDefaults() {
 			}
 		}
 	}
+}
+
+// Dashboard auth modes.
+const (
+	AuthModeLocal        = "local"         // built-in login form + Basic Auth (default)
+	AuthModeTrustedProxy = "trusted_proxy" // trust identity headers from configured reverse proxies
+)
+
+// ParseTrustedProxyCIDRs parses trusted proxy entries into networks.
+// Entries may be CIDRs ("172.30.0.0/16") or bare IPs ("127.0.0.1", "::1"),
+// which are treated as single-host networks.
+func ParseTrustedProxyCIDRs(entries []string) ([]*net.IPNet, error) {
+	nets := make([]*net.IPNet, 0, len(entries))
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if _, ipNet, err := net.ParseCIDR(entry); err == nil {
+			nets = append(nets, ipNet)
+			continue
+		}
+		ip := net.ParseIP(entry)
+		if ip == nil {
+			return nil, fmt.Errorf("invalid trusted proxy CIDR or IP: %q", entry)
+		}
+		bits := 32
+		if ip.To4() == nil {
+			bits = 128
+		}
+		nets = append(nets, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+	}
+	return nets, nil
 }
 
 // Validate checks the configuration for errors.
@@ -594,6 +648,20 @@ func (c *Config) Validate() error {
 	// Port range
 	if c.Port < 1024 || c.Port > 65535 {
 		return fmt.Errorf("port must be between 1024 and 65535")
+	}
+
+	// Auth mode: fail closed if trusted_proxy is misconfigured
+	switch c.AuthMode {
+	case AuthModeLocal:
+	case AuthModeTrustedProxy:
+		if len(c.TrustedProxyCIDRs) == 0 {
+			return fmt.Errorf("ONWATCH_AUTH_MODE=trusted_proxy requires ONWATCH_TRUSTED_PROXY_CIDRS")
+		}
+		if _, err := ParseTrustedProxyCIDRs(c.TrustedProxyCIDRs); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("invalid ONWATCH_AUTH_MODE %q (valid: %s, %s)", c.AuthMode, AuthModeLocal, AuthModeTrustedProxy)
 	}
 	if c.APIIntegrationsRetention < 0 {
 		return fmt.Errorf("API integrations retention must be non-negative")
@@ -814,6 +882,11 @@ func (c *Config) String() string {
 	fmt.Fprintf(&sb, "  Port: %d,\n", c.Port)
 	if c.BasePath != "" {
 		fmt.Fprintf(&sb, "  BasePath: %s,\n", c.BasePath)
+	}
+	if c.AuthMode != "" && c.AuthMode != AuthModeLocal {
+		fmt.Fprintf(&sb, "  AuthMode: %s,\n", c.AuthMode)
+		fmt.Fprintf(&sb, "  TrustedProxyCIDRs: %s,\n", strings.Join(c.TrustedProxyCIDRs, " "))
+		fmt.Fprintf(&sb, "  TrustedUserHeader: %s,\n", c.TrustedUserHeader)
 	}
 	fmt.Fprintf(&sb, "  AdminUser: %s,\n", c.AdminUser)
 	fmt.Fprintf(&sb, "  AdminPass: ****,\n")

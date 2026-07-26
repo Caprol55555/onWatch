@@ -1555,7 +1555,26 @@ func run() error {
 	loginRateLimiter := web.NewLoginRateLimiter(1000)
 	handler.SetRateLimiter(loginRateLimiter)
 
-	server := web.NewServer(cfg.Port, handler, logger, cfg.AdminUser, cfg.AdminPassHash, cfg.Host, cfg.BasePath, cfg.MetricsToken)
+	// Trusted reverse-proxy auth mode (issue #83): validated at config load,
+	// re-checked here so a parse failure can never silently disable auth.
+	var trustedProxy *web.TrustedProxyAuth
+	if cfg.AuthMode == config.AuthModeTrustedProxy {
+		nets, err := config.ParseTrustedProxyCIDRs(cfg.TrustedProxyCIDRs)
+		if err != nil {
+			logger.Error("invalid trusted proxy configuration", "error", err)
+			os.Exit(1)
+		}
+		trustedProxy = web.NewTrustedProxyAuth(nets, cfg.TrustedUserHeader)
+		if trustedProxy == nil {
+			logger.Error("trusted_proxy auth mode requires ONWATCH_TRUSTED_PROXY_CIDRS and ONWATCH_TRUSTED_USER_HEADER")
+			os.Exit(1)
+		}
+		logger.Info("dashboard auth mode: trusted_proxy",
+			"trusted_cidrs", strings.Join(cfg.TrustedProxyCIDRs, ","),
+			"user_header", cfg.TrustedUserHeader)
+	}
+
+	server := web.NewServer(cfg.Port, handler, logger, cfg.AdminUser, cfg.AdminPassHash, cfg.Host, cfg.BasePath, cfg.MetricsToken, trustedProxy)
 
 	// Setup signal handling
 	ctx, cancel := context.WithCancel(context.Background())

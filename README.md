@@ -354,6 +354,9 @@ Additional environment variables:
 | `ONWATCH_ADMIN_PASS`     | Initial dashboard password (default: `changeme`)       |
 | `ONWATCH_LOG_LEVEL`      | Log level: debug, info, warn, error                    |
 | `ONWATCH_HOST`           | Bind address (default: `0.0.0.0`)                      |
+| `ONWATCH_AUTH_MODE`      | `local` (default) or `trusted_proxy` (SSO via reverse proxy, see [docs/TRUSTED_PROXY_AUTH.md](docs/TRUSTED_PROXY_AUTH.md)) |
+| `ONWATCH_TRUSTED_PROXY_CIDRS` | Comma-separated CIDRs/IPs allowed to assert identity headers (required for `trusted_proxy`) |
+| `ONWATCH_TRUSTED_USER_HEADER` | Identity header set by the proxy (default: `X-Forwarded-User`) |
 | `ONWATCH_API_INTEGRATIONS_ENABLED` | Enable or disable API Integrations ingestion (default: `true`) |
 | `ONWATCH_API_INTEGRATIONS_DIR`     | Directory onWatch tails for API Integrations JSONL events |
 | `ONWATCH_API_INTEGRATIONS_RETENTION` | How long API Integrations rows are kept in SQLite (default: `1440h` = 60 days, `0` disables pruning) |
