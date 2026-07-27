@@ -96,6 +96,7 @@ type Handler struct {
 	cursorTracker      *tracker.CursorTracker
 	grokTracker        *tracker.GrokTracker
 	kimiTracker        *tracker.KimiTracker
+	opencodeTracker    *tracker.OpenCodeTracker
 	updater            *update.Updater
 	notifier           Notifier
 	agentManager       ProviderAgentController
@@ -1121,6 +1122,7 @@ func providerCatalog() []providerCatalogItem {
 		{Key: "cursor", Name: "Cursor", Description: "Cursor usage and quota tracking", AutoDetectable: true},
 		{Key: "grok", Name: "Grok", Description: "Grok (xAI) usage tracking", AutoDetectable: true},
 		{Key: "kimi", Name: "Kimi Code", Description: "Kimi Code CLI OAuth quota tracking", AutoDetectable: true},
+		{Key: "opencode", Name: "OpenCode Go", Description: "OpenCode Go quota tracking", AutoDetectable: false},
 	}
 }
 
@@ -1197,6 +1199,8 @@ func (h *Handler) isProviderConfigured(provider string) bool {
 			return true
 		}
 		return api.DetectKimiCredentials(h.logger) != nil
+	case "opencode":
+		return h.config != nil && strings.TrimSpace(h.config.OpenCodeGoWorkspaceID) != "" && strings.TrimSpace(h.config.OpenCodeGoAuthCookie) != ""
 	default:
 		return false
 	}
@@ -1345,6 +1349,8 @@ func applyProviderConfig(dst, src *config.Config) {
 	dst.CodexAutoToken = src.CodexAutoToken
 	dst.CodexAutoSource = src.CodexAutoSource
 	dst.OpenCodeEnabled = src.OpenCodeEnabled
+	dst.OpenCodeGoWorkspaceID = src.OpenCodeGoWorkspaceID
+	dst.OpenCodeGoAuthCookie = src.OpenCodeGoAuthCookie
 	dst.AntigravityBaseURL = src.AntigravityBaseURL
 	dst.AntigravityCSRFToken = src.AntigravityCSRFToken
 	dst.AntigravityEnabled = src.AntigravityEnabled
@@ -1369,9 +1375,10 @@ func applyProviderConfig(dst, src *config.Config) {
 // and replaced with a "{key}_set: true" flag so the UI can show status
 // without exposing the actual values.
 var providerSecretKeys = map[string]bool{
-	"api_key":    true,
-	"token":      true,
-	"csrf_token": true,
+	"api_key":     true,
+	"token":       true,
+	"csrf_token":  true,
+	"auth_cookie": true,
 }
 
 // stripProviderSecrets removes sensitive field values from provider_settings
@@ -1432,6 +1439,9 @@ var providerEnumFields = map[string]map[string][]string{
 		"display_mode": {"usage", "available"},
 	},
 	"cursor": {
+		"display_mode": {"usage", "available"},
+	},
+	"opencode": {
 		"display_mode": {"usage", "available"},
 	},
 }
@@ -1540,6 +1550,12 @@ func ApplyProviderSettingsFromDB(st *store.Store, cfg *config.Config, logger *sl
 	if s := provSettings["opencode"]; s != nil {
 		if enabled, ok := s["enabled"].(bool); ok {
 			cfg.OpenCodeEnabled = enabled
+		}
+		if id, _ := s["workspace_id"].(string); id != "" {
+			cfg.OpenCodeGoWorkspaceID = id
+		}
+		if cookie, _ := s["auth_cookie"].(string); cookie != "" {
+			cfg.OpenCodeGoAuthCookie = cookie
 		}
 	}
 
@@ -1849,6 +1865,8 @@ func (h *Handler) Current(w http.ResponseWriter, r *http.Request) {
 		h.currentGrok(w, r)
 	case "kimi":
 		h.currentKimi(w, r)
+	case "opencode":
+		h.currentOpenCode(w, r)
 	default:
 		respondError(w, http.StatusBadRequest, fmt.Sprintf("unknown provider: %s", provider))
 	}
@@ -2302,6 +2320,9 @@ func (h *Handler) currentBoth(w http.ResponseWriter, r *http.Request) {
 	if h.config.HasProvider("kimi") && providerTelemetryEnabled(visibility, "kimi") {
 		response["kimi"] = h.buildKimiCurrent()
 	}
+	if h.config.HasProvider("opencode") && providerTelemetryEnabled(visibility, "opencode") {
+		response["opencode"] = h.buildOpenCodeCurrent()
+	}
 	respondJSON(w, http.StatusOK, response)
 }
 
@@ -2652,6 +2673,8 @@ func (h *Handler) History(w http.ResponseWriter, r *http.Request) {
 		h.historyGrok(w, r)
 	case "kimi":
 		h.historyKimi(w, r)
+	case "opencode":
+		h.historyOpenCode(w, r)
 	default:
 		respondError(w, http.StatusBadRequest, fmt.Sprintf("unknown provider: %s", provider))
 	}
@@ -3064,6 +3087,28 @@ func (h *Handler) historyBoth(w http.ResponseWriter, r *http.Request) {
 				kimiData = append(kimiData, entry)
 			}
 			response["kimi"] = kimiData
+		}
+	}
+
+	if h.config.HasProvider("opencode") && providerTelemetryEnabled(visibility, "opencode") && h.store != nil {
+		snapshots, err := h.store.QueryOpenCodeRange(start, now, 200)
+		if err == nil {
+			step := downsampleStep(len(snapshots), maxChartPoints)
+			last := len(snapshots) - 1
+			opencodeData := make([]map[string]interface{}, 0, min(len(snapshots), maxChartPoints))
+			for i, snap := range snapshots {
+				if step > 1 && i != 0 && i != last && i%step != 0 {
+					continue
+				}
+				entry := map[string]interface{}{
+					"capturedAt": snap.CapturedAt.Format(time.RFC3339),
+				}
+				for _, q := range snap.Quotas {
+					entry[q.Name] = q.Utilization
+				}
+				opencodeData = append(opencodeData, entry)
+			}
+			response["opencode"] = opencodeData
 		}
 	}
 
@@ -3673,6 +3718,8 @@ func (h *Handler) Cycles(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusOK, map[string]interface{}{"cycles": []interface{}{}})
 	case "kimi":
 		respondJSON(w, http.StatusOK, map[string]interface{}{"cycles": []interface{}{}})
+	case "opencode":
+		h.cyclesOpenCode(w, r)
 	default:
 		respondError(w, http.StatusBadRequest, fmt.Sprintf("unknown provider: %s", provider))
 	}
@@ -4044,6 +4091,8 @@ func (h *Handler) Summary(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusOK, map[string]interface{}{"summaries": []interface{}{}})
 	case "kimi":
 		respondJSON(w, http.StatusOK, map[string]interface{}{"summaries": []interface{}{}})
+	case "opencode":
+		h.summaryOpenCode(w, r)
 	default:
 		respondError(w, http.StatusBadRequest, fmt.Sprintf("unknown provider: %s", provider))
 	}
@@ -4861,6 +4910,8 @@ func (h *Handler) Insights(w http.ResponseWriter, r *http.Request) {
 		h.insightsGrok(w, r, rangeDur)
 	case "kimi":
 		h.insightsKimi(w, r, rangeDur)
+	case "opencode":
+		h.insightsOpenCode(w, r, rangeDur)
 	default:
 		respondError(w, http.StatusBadRequest, fmt.Sprintf("unknown provider: %s", provider))
 	}
@@ -4954,6 +5005,9 @@ func (h *Handler) insightsBoth(w http.ResponseWriter, r *http.Request, rangeDur 
 	}
 	if h.config.HasProvider("kimi") && providerTelemetryEnabled(visibility, "kimi") {
 		response["kimi"] = h.buildKimiInsights(hidden)
+	}
+	if h.config.HasProvider("opencode") && providerTelemetryEnabled(visibility, "opencode") {
+		response["opencode"] = h.buildOpenCodeInsights(hidden, rangeDur)
 	}
 
 	respondJSON(w, http.StatusOK, response)
@@ -7368,6 +7422,8 @@ func (h *Handler) CycleOverview(w http.ResponseWriter, r *http.Request) {
 		h.cycleOverviewGrok(w, r)
 	case "kimi":
 		h.cycleOverviewKimi(w, r)
+	case "opencode":
+		h.cycleOverviewOpenCode(w, r)
 	default:
 		respondError(w, http.StatusBadRequest, fmt.Sprintf("unknown provider: %s", provider))
 	}
@@ -11009,6 +11065,8 @@ func (h *Handler) LoggingHistory(w http.ResponseWriter, r *http.Request) {
 		h.loggingHistoryGrok(w, r)
 	case "kimi":
 		h.loggingHistoryKimi(w, r)
+	case "opencode":
+		h.loggingHistoryOpenCode(w, r)
 	default:
 		respondError(w, http.StatusBadRequest, fmt.Sprintf("unknown provider: %s", provider))
 	}

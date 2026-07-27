@@ -1088,6 +1088,10 @@ func run() error {
 	if cfg.HasProvider("kimi") {
 		kimiTr = tracker.NewKimiTracker(db, logger)
 	}
+	var opencodeTr *tracker.OpenCodeTracker
+	if cfg.HasProvider("opencode") {
+		opencodeTr = tracker.NewOpenCodeTracker(db, logger)
+	}
 
 	var antigravityAg *agent.AntigravityAgent
 	if antigravityClient != nil {
@@ -1170,6 +1174,12 @@ func run() error {
 		kimiSm := agent.NewSessionManager(db, "kimi", idleTimeout, logger)
 		kimiAg = agent.NewKimiAgent(kimiClient, db, kimiTr, cfg.PollInterval, logger, kimiSm)
 	}
+	var opencodeAg *agent.OpenCodeAgent
+	if cfg.HasProvider("opencode") {
+		opencodeClient := api.NewOpenCodeClient(logger)
+		opencodeSm := agent.NewSessionManager(db, "opencode", idleTimeout, logger)
+		opencodeAg = agent.NewOpenCodeAgent(opencodeClient, db, opencodeTr, cfg, cfg.PollInterval, logger, opencodeSm)
+	}
 
 	var apiIntegrationsAg *agent.APIIntegrationsIngestAgent
 	if cfg.APIIntegrationsEnabled {
@@ -1226,6 +1236,9 @@ func run() error {
 	}
 	if kimiAg != nil {
 		kimiAg.SetNotifier(notifier)
+	}
+	if opencodeAg != nil {
+		opencodeAg.SetNotifier(notifier)
 	}
 
 	// Wire polling checks - agents skip poll when telemetry disabled
@@ -1387,6 +1400,9 @@ func run() error {
 	if kimiAg != nil {
 		kimiAg.SetPollingCheck(func() bool { return isPollingEnabled("kimi") })
 	}
+	if opencodeAg != nil {
+		opencodeAg.SetPollingCheck(func() bool { return isPollingEnabled("opencode") })
+	}
 
 	// Wire reset callbacks to trackers
 	tr.SetOnReset(func(quotaName string) {
@@ -1457,6 +1473,11 @@ func run() error {
 			notifier.Check(notify.QuotaStatus{Provider: "kimi", QuotaKey: quotaName, ResetOccurred: true})
 		})
 	}
+	if opencodeTr != nil {
+		opencodeTr.SetOnReset(func(quotaName string) {
+			notifier.Check(notify.QuotaStatus{Provider: "opencode", QuotaKey: quotaName, ResetOccurred: true})
+		})
+	}
 
 	handler := web.NewHandler(db, tr, logger, nil, cfg, zaiTr)
 	handler.SetVersion(version)
@@ -1496,6 +1517,9 @@ func run() error {
 	}
 	if kimiTr != nil {
 		handler.SetKimiTracker(kimiTr)
+	}
+	if opencodeTr != nil {
+		handler.SetOpenCodeTracker(opencodeTr)
 	}
 	agentMgr := agent.NewAgentManager(logger)
 	if ag != nil {
@@ -1539,6 +1563,9 @@ func run() error {
 	}
 	if kimiAg != nil {
 		agentMgr.RegisterFactory("kimi", func() (agent.AgentRunner, error) { return kimiAg, nil })
+	}
+	if opencodeAg != nil {
+		agentMgr.RegisterFactory("opencode", func() (agent.AgentRunner, error) { return opencodeAg, nil })
 	}
 
 	if apiIntegrationsAg != nil {
@@ -1585,7 +1612,7 @@ func run() error {
 
 	// Start configured agents through the manager.
 	startedAny := false
-	for _, providerKey := range []string{"synthetic", "zai", "anthropic", "copilot", "codex", "antigravity", "minimax", "openrouter", "gemini", "cursor", "grok", "kimi", "moonshot", "deepseek"} {
+	for _, providerKey := range []string{"synthetic", "zai", "anthropic", "copilot", "codex", "antigravity", "minimax", "openrouter", "gemini", "cursor", "grok", "kimi", "moonshot", "deepseek", "opencode"} {
 		if !isPollingEnabled(providerKey) {
 			continue
 		}

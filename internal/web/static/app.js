@@ -72,6 +72,8 @@ function getCurrentProvider() {
   if (grokGrid) return 'grok';
   const kimiGrid = document.getElementById('quota-grid-kimi');
   if (kimiGrid) return 'kimi';
+  const opencodeGrid = document.getElementById('quota-grid-opencode');
+  if (opencodeGrid) return 'opencode';
   const grid = document.getElementById('quota-grid');
   return (grid && grid.dataset.provider) || 'synthetic';
 }
@@ -940,6 +942,7 @@ function quotaOrderForProvider(provider) {
   if (provider === 'anthropic') return anthropicQuotaOrder;
   if (provider === 'codex') return codexQuotaOrder;
   if (provider === 'cursor') return cursorQuotaOrder;
+  if (provider === 'opencode') return opencodeQuotaOrder;
   return [];
 }
 
@@ -1155,6 +1158,11 @@ const renewalCategories = {
     { label: 'API Usage', groupBy: 'api_usage' },
     { label: 'Credits', groupBy: 'credits' },
     { label: 'On-Demand', groupBy: 'on_demand' }
+  ],
+  opencode: [
+    { label: '5-Hour', groupBy: 'five_hour' },
+    { label: 'Weekly', groupBy: 'weekly' },
+    { label: 'Monthly', groupBy: 'monthly' }
   ]
 };
 
@@ -3772,6 +3780,158 @@ function updateKimiQuotaCards(quotas, containerId) {
     }
   });
 }
+const opencodeQuotaOrder = ['five_hour', 'weekly', 'monthly'];
+const opencodeDisplayNames = {
+  five_hour: '5-Hour Quota',
+  weekly: 'Weekly Quota',
+  monthly: 'Monthly Quota'
+};
+const opencodeChartColorMap = {
+  five_hour: { border: '#10a37f', bg: 'rgba(16, 163, 127, 0.08)' },
+  weekly: { border: '#2563eb', bg: 'rgba(37, 99, 235, 0.08)' },
+  monthly: { border: '#9333ea', bg: 'rgba(147, 51, 234, 0.08)' }
+};
+const opencodeChartColorFallback = [
+  { border: '#f59e0b', bg: 'rgba(245, 158, 11, 0.08)' },
+  { border: '#ec4899', bg: 'rgba(236, 72, 153, 0.08)' }
+];
+
+function renderOpenCodeQuotaCards(quotas, containerId) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  if (!Array.isArray(quotas) || quotas.length === 0) {
+    container.innerHTML = '<p class="empty-state">No OpenCode data available</p>';
+    return;
+  }
+
+  container.innerHTML = quotas.map((q, i) => {
+    const icon = '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>';
+    const displayName = q.displayName || opencodeDisplayNames[q.name] || q.name;
+    const displayPct = q.cardPercent != null ? q.cardPercent : (q.utilization || 0);
+    const usagePct = displayPct.toFixed(1);
+    const status = q.status || 'healthy';
+    const statusCfg = statusConfig[status] || statusConfig.healthy;
+    const progressId = `progress-opencode-${q.name}`;
+    const percentId = `percent-opencode-${q.name}`;
+    const fractionId = `fraction-opencode-${q.name}`;
+    const statusId = `status-opencode-${q.name}`;
+    const resetId = `reset-opencode-${q.name}`;
+    const countdownId = `countdown-opencode-${q.name}`;
+
+    const cardLabel = q.format === 'currency' ? '$' + (q.used || 0).toFixed(2) + ' / $' + (q.limit || 0).toFixed(2) : (q.used || 0) + ' / ' + (q.limit || 0);
+
+    return `<article class="quota-card opencode-card" data-quota="${q.name}" data-provider="opencode" role="button" tabindex="0" aria-label="View ${displayName} details" style="animation-delay: ${i * 60}ms">
+      <header class="card-header">
+        <h2 class="quota-title">
+          <svg class="quota-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${icon}</svg>
+          ${displayName}
+        </h2>
+        <span class="countdown" id="${countdownId}">${q.timeUntilResetSeconds > 0 ? formatDuration(q.timeUntilResetSeconds) : '--:--'}</span>
+      </header>
+      <div class="progress-stats">
+        <span class="usage-percent" id="${percentId}">${usagePct}%</span>
+        <span class="usage-fraction" id="${fractionId}">${cardLabel}</span>
+      </div>
+      <div class="progress-wrapper">
+        <div class="progress-bar" role="progressbar" aria-valuenow="${Math.round(displayPct)}" aria-valuemin="0" aria-valuemax="100">
+          <div class="progress-fill" id="${progressId}" style="width: ${usagePct}%" data-status="${status}"></div>
+        </div>
+      </div>
+      <footer class="card-footer">
+        <span class="status-badge" id="${statusId}" data-status="${status}">
+          <svg class="status-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="${statusCfg.icon}"/></svg>
+          ${statusCfg.label}
+        </span>
+        <span class="reset-time" id="${resetId}"${q.resetsAt ? ` data-reset-at="${q.resetsAt}"` : ''}>${q.resetsAt ? formatResetTime(q.resetsAt) : ''}</span>
+      </footer>
+    </article>`;
+  }).join('');
+}
+
+function openCodeQuotaSetsMatch(container, quotas) {
+  if (!container || !Array.isArray(quotas)) return false;
+
+  const renderedCards = Array.from(container.querySelectorAll('.opencode-card[data-quota]'));
+  const hasRenderedState = renderedCards.length > 0 || container.querySelector('.empty-state') !== null;
+  if (!hasRenderedState) return false;
+
+  const renderedNames = new Set(renderedCards.map(card => card.dataset.quota));
+  const incomingNames = new Set(quotas.map(quota => quota && quota.name).filter(Boolean));
+  if (renderedCards.length !== incomingNames.size || renderedNames.size !== incomingNames.size) return false;
+
+  return Array.from(incomingNames).every(name => renderedNames.has(name));
+}
+
+function updateOpenCodeCard(quota) {
+  const key = `opencode-${quota.name}`;
+  const prev = State.currentQuotas[key];
+  State.currentQuotas[key] = {
+    percent: quota.utilization || 0,
+    used: quota.used || 0,
+    limit: quota.limit || 0,
+    status: quota.status || 'healthy',
+    renewsAt: quota.resetsAt,
+    timeUntilResetSeconds: quota.timeUntilResetSeconds || 0,
+    name: quota.name,
+    displayName: quota.displayName
+  };
+
+  const displayPct = quota.cardPercent != null ? quota.cardPercent : (quota.utilization || 0);
+  const usagePct = displayPct.toFixed(1);
+  const status = quota.status || 'healthy';
+
+  const progressEl = document.getElementById(`progress-opencode-${quota.name}`);
+  const percentEl = document.getElementById(`percent-opencode-${quota.name}`);
+  const fractionEl = document.getElementById(`fraction-opencode-${quota.name}`);
+  const statusEl = document.getElementById(`status-opencode-${quota.name}`);
+  const resetEl = document.getElementById(`reset-opencode-${quota.name}`);
+  const countdownEl = document.getElementById(`countdown-opencode-${quota.name}`);
+
+  if (progressEl) {
+    progressEl.style.width = `${usagePct}%`;
+    progressEl.setAttribute('data-status', status);
+    const bar = progressEl.parentElement;
+    if (bar) bar.setAttribute('aria-valuenow', Math.round(displayPct));
+  }
+  if (percentEl) {
+    const oldVal = prev ? prev.percent : 0;
+    if (Math.abs(oldVal - displayPct) > 0.2) {
+      animateValue(percentEl, oldVal, displayPct, 400, v => `${v.toFixed(1)}%`);
+    } else {
+      percentEl.textContent = `${usagePct}%`;
+    }
+  }
+  if (fractionEl) {
+    const cardLabel = quota.format === 'currency' ? '$' + (quota.used || 0).toFixed(2) + ' / $' + (quota.limit || 0).toFixed(2) : (quota.used || 0) + ' / ' + (quota.limit || 0);
+    fractionEl.textContent = cardLabel;
+  }
+  if (statusEl) {
+    const config = statusConfig[status] || statusConfig.healthy;
+    statusEl.setAttribute('data-status', status);
+    statusEl.innerHTML = `<svg class="status-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="${config.icon}"/></svg>${config.label}`;
+  }
+  if (resetEl) {
+    if (quota.resetsAt) {
+      resetEl.setAttribute('data-reset-at', quota.resetsAt);
+      resetEl.textContent = formatResetTime(quota.resetsAt);
+    } else {
+      resetEl.removeAttribute('data-reset-at');
+      resetEl.textContent = '';
+    }
+  }
+  if (countdownEl) {
+    if (quota.timeUntilResetSeconds > 0) {
+      countdownEl.textContent = formatDuration(quota.timeUntilResetSeconds);
+      countdownEl.classList.toggle('imminent', quota.timeUntilResetSeconds < 1800);
+      countdownEl.style.display = '';
+    } else {
+      countdownEl.style.display = 'none';
+    }
+  }
+}
+
+
 
 async function fetchCurrent() {
   const requestProvider = getCurrentProvider();
@@ -3935,6 +4095,17 @@ async function fetchCurrent() {
             updateKimiQuotaCards(data.quotas || [], 'quota-grid-kimi');
           }
         }
+      } else if (provider === 'opencode') {
+        if (data.quotas) {
+          const container = document.getElementById('quota-grid-opencode');
+          if (container && !openCodeQuotaSetsMatch(container, data.quotas)) {
+            renderOpenCodeQuotaCards(data.quotas, 'quota-grid-opencode');
+          }
+          if (Array.isArray(data.quotas) && data.quotas.length > 0) {
+            data.quotas.forEach(q => updateOpenCodeCard(q));
+          }
+        }
+
       } else if (provider === 'zai') {
         updateCard('tokensLimit', data.tokensLimit);
         updateCard('timeLimit', data.timeLimit);
@@ -4937,6 +5108,8 @@ function initChart() {
     defaultDatasets = []; // Grok datasets are dynamic - populated when history data arrives
   } else if (provider === 'kimi') {
     defaultDatasets = []; // Kimi datasets are dynamic - populated when history data arrives
+  } else if (provider === 'opencode') {
+    defaultDatasets = []; // OpenCode datasets are dynamic
   } else if (provider === 'zai') {
     defaultDatasets = [
       { label: 'Tokens Limit', data: [], borderColor: getComputedStyle(document.documentElement).getPropertyValue('--chart-subscription').trim() || '#0D9488', backgroundColor: 'rgba(13, 148, 136, 0.06)', fill: true, tension: 0.4, borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, hidden: State.hiddenQuotas.has('tokensLimit') },
@@ -4963,6 +5136,8 @@ function initChart() {
     : provider === 'grok'
       ? []
     : provider === 'kimi'
+      ? []
+    : provider === 'opencode'
       ? []
     : provider === 'api-integrations'
       ? []
@@ -5492,6 +5667,34 @@ async function fetchHistory(range) {
       State.chart.update();
       return;
     }
+    if (provider === 'opencode') {
+      const flattenedRows = historyRows.map(row => {
+        const flat = { capturedAt: row.capturedAt };
+        if (Array.isArray(row.quotas)) {
+          row.quotas.forEach(q => { flat[q.name] = q.utilization; });
+        }
+        return flat;
+      });
+      const style = getComputedStyle(document.documentElement);
+      const datasets = [];
+      const configs = [
+        { label: '5-Hour Limit', key: 'five_hour', hiddenKey: 'five_hour', color: style.getPropertyValue('--chart-subscription').trim() || '#0D9488', bg: 'rgba(13, 148, 136, 0.06)' },
+        { label: 'Weekly Limit', key: 'weekly', hiddenKey: 'weekly', color: style.getPropertyValue('--chart-search').trim() || '#F59E0B', bg: 'rgba(245, 158, 11, 0.06)' },
+        { label: 'Monthly Limit', key: 'monthly', hiddenKey: 'monthly', color: style.getPropertyValue('--chart-toolcalls').trim() || '#3B82F6', bg: 'rgba(59, 130, 246, 0.06)' }
+      ];
+      configs.forEach(cfg => {
+        const rawData = flattenedRows.map(d => ({ x: new Date(d.capturedAt), y: d[cfg.key] || 0 }));
+        const { data, gapSegments, pointRadii } = processDataWithGaps(rawData, range);
+        datasets.push({ label: cfg.label, data: data, borderColor: cfg.color, backgroundColor: cfg.bg, fill: true, tension: 0.4, borderWidth: 2, pointRadius: pointRadii, pointHoverRadius: 4, hidden: State.hiddenQuotas.has(cfg.hiddenKey), spanGaps: true, segment: getSegmentStyle(gapSegments, cfg.color) });
+      });
+      State.chart.data.datasets = datasets;
+      updateTimeScale(State.chart, range);
+      State.chartYMax = computeYMax(State.chart.data.datasets, State.chart);
+      State.chart.options.scales.y.max = State.chartYMax;
+      State.chart.update();
+      return;
+    }
+
 
     if (provider === 'codex') {
       // Codex history: array of { capturedAt, five_hour, seven_day, ... }
@@ -5580,6 +5783,7 @@ const bothProviderNames = {
   cursor: 'Cursor',
   grok: 'Grok',
   kimi: 'Kimi Code',
+  opencode: 'OpenCode',
   'api-integrations': 'API Integrations',
 };
 
@@ -5915,7 +6119,7 @@ function buildAllProviderEntries() {
       title: bothProviderNames[provider] || toTitleCase(provider),
       badge: provider === 'copilot'
         ? 'Beta'
-        : (provider === 'cursor'
+        : (provider === 'cursor' || provider === 'opencode'
           ? (payload.planName || toTitleCase(payload.accountType || ''))
           : toTitleCase(payload.planType || '')),
       promoHtml: provider === 'anthropic' && payload.promo ? promoTagHTML() : '',
@@ -6452,7 +6656,7 @@ function buildProviderCardDatasets(provider, rows, range) {
   if (provider === 'gemini') {
     return buildDynamicDatasetsForRows(rows, range, geminiDisplayNames, geminiChartColorMap, geminiChartColorFallback, 'gemini');
   }
-  if (provider === 'cursor') {
+  if (provider === 'cursor' || provider === 'opencode') {
     const normalizedRows = rows.map((row) => {
       if (!Array.isArray(row.quotas)) return row;
       const entry = { capturedAt: row.capturedAt };
@@ -6461,7 +6665,9 @@ function buildProviderCardDatasets(provider, rows, range) {
       });
       return entry;
     });
-    return buildDynamicDatasetsForRows(normalizedRows, range, cursorDisplayNames, cursorChartColorMap, cursorChartColorFallback, 'cursor');
+    return provider === 'cursor'
+      ? buildDynamicDatasetsForRows(normalizedRows, range, cursorDisplayNames, cursorChartColorMap, cursorChartColorFallback, 'cursor')
+      : buildDynamicDatasetsForRows(normalizedRows, range, opencodeDisplayNames, opencodeChartColorMap, opencodeChartColorFallback, 'opencode');
   }
   if (provider === 'openrouter') {
     const orDisplayNames = { usage: 'Total Usage', usageDaily: 'Daily Usage', percent: 'Usage %' };
@@ -6979,7 +7185,7 @@ async function fetchCycles() {
   const requestSeq = (State.cyclesRequestSeq || 0) + 1;
   State.cyclesRequestSeq = requestSeq;
   const provider = requestProvider;
-  const loggingHistoryProviders = new Set(['synthetic', 'zai', 'anthropic', 'copilot', 'codex', 'antigravity', 'minimax', 'gemini', 'cursor', 'grok', 'kimi']);
+  const loggingHistoryProviders = new Set(['synthetic', 'zai', 'anthropic', 'copilot', 'codex', 'antigravity', 'minimax', 'gemini', 'cursor', 'grok', 'kimi', 'opencode']);
 
   // All-accounts overview: fetch each account's logging history and merge,
   // tagging every row with its account name for the combined table.
@@ -7173,7 +7379,7 @@ function renderCyclesTable() {
 
   const provider = getCurrentProvider();
   const quotaNames = State.cyclesQuotaNames;
-  const usePercent = provider === 'anthropic' || provider === 'copilot' || provider === 'codex' || provider === 'antigravity' || provider === 'minimax' || provider === 'gemini' || provider === 'openrouter' || provider === 'cursor' || provider === 'grok' || provider === 'kimi' || provider === 'moonshot' || provider === 'deepseek';
+  const usePercent = provider === 'anthropic' || provider === 'copilot' || provider === 'codex' || provider === 'antigravity' || provider === 'minimax' || provider === 'gemini' || provider === 'openrouter' || provider === 'cursor' || provider === 'grok' || provider === 'kimi' || provider === 'moonshot' || provider === 'deepseek' || provider === 'opencode';
   const deltaUsesPercent = usePercent && provider !== 'minimax' && provider !== 'moonshot' && provider !== 'deepseek';
   const isLoggingHistory = State.isLoggingHistory === true;
   const showAccount = isAccountsOverviewMode(provider);
@@ -8535,7 +8741,7 @@ function renderOverviewTable() {
 
   const quotaNames = State.overviewQuotaNames;
   const overviewProv = getOverviewProvider();
-  const usePercent = overviewProv === 'anthropic' || overviewProv === 'codex' || overviewProv === 'antigravity' || overviewProv === 'minimax' || overviewProv === 'gemini' || overviewProv === 'openrouter' || overviewProv === 'cursor' || overviewProv === 'grok' || overviewProv === 'kimi';
+  const usePercent = overviewProv === 'anthropic' || overviewProv === 'codex' || overviewProv === 'antigravity' || overviewProv === 'minimax' || overviewProv === 'gemini' || overviewProv === 'openrouter' || overviewProv === 'cursor' || overviewProv === 'grok' || overviewProv === 'kimi' || overviewProv === 'opencode';
   const deltaUsesPercent = usePercent && overviewProv !== 'minimax';
   // MiniMax reports a percentage-based quota; the Duration and Total Delta
   // columns add no signal there, so omit them for this provider.
@@ -9642,6 +9848,7 @@ const DEFAULT_PROVIDER_TAB_LABELS = {
   cursor: 'Cursor',
   grok: 'Grok',
   kimi: 'Kimi',
+  opencode: 'OpenCode',
   'api-integrations': 'API Integrations',
   both: 'All',
 };
@@ -10352,6 +10559,14 @@ const providerSettingsConfig = {
     title: 'Gemini',
     desc: 'Gemini is auto-detected from your local credentials. Use the telemetry toggle to enable or disable tracking.',
     fields: [],
+  },
+  opencode: {
+    title: 'OpenCode Go',
+    desc: 'Configure OpenCode Go quota tracking. Changes take effect after daemon restart.',
+    fields: [
+      { id: 'workspace_id', label: 'Workspace ID', type: 'text', placeholder: 'wrk_...', hint: 'Your OpenCode Go workspace ID. Overrides OPENCODE_GO_WORKSPACE_ID from .env.' },
+      { id: 'auth_cookie', label: 'Auth Cookie', type: 'password', placeholder: 'Not configured', hint: 'The auth cookie value required for scraping the dashboard. Overrides OPENCODE_GO_AUTH_COOKIE from .env.', sensitive: true },
+    ],
   },
 };
 
@@ -11362,6 +11577,11 @@ const _overrideQuotasByProvider = {
   zai: [
     { key: 'tokens', label: 'Tokens Limit' },
     { key: 'time', label: 'Time Limit' },
+  ],
+  opencode: [
+    { key: 'five_hour', label: '5-Hour Limit' },
+    { key: 'weekly', label: 'Weekly Limit' },
+    { key: 'monthly', label: 'Monthly Limit' },
   ],
 };
 
