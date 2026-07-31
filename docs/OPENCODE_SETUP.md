@@ -36,14 +36,36 @@ This is separate from `OPENCODE_ENABLED`, which only feeds ChatGPT credentials f
 
 ## 1. Find Your Workspace ID
 
-1. Open https://opencode.ai and sign in
-2. Open your OpenCode Go usage page. The URL looks like:
+Open https://opencode.ai and sign in, then use either method below.
+
+### From the browser URL
+
+Open your OpenCode Go usage page. The URL looks like:
 
 ```text
 https://opencode.ai/workspace/wrk_xxxxxxxx/go
 ```
 
-3. Copy the `wrk_...` segment. That is your `OPENCODE_GO_WORKSPACE_ID`.
+Copy the `wrk_...` segment. That is your `OPENCODE_GO_WORKSPACE_ID`.
+
+### From the authenticated Go page
+
+Copy the `auth` cookie value as described in the next section, then run:
+
+```bash
+curl -sS --compressed \
+  -H 'Cookie: auth=<your-auth-cookie-value>' \
+  https://opencode.ai/go |
+  grep -oE 'wrk_[A-Za-z0-9]+' |
+  sort -u
+```
+
+The authenticated `/go` page contains the workspace ID. The site root does not.
+`https://opencode.ai/zen` can also expose it, but `/go` is preferred for an
+OpenCode Go subscription.
+
+If the command returns multiple workspace IDs, use the one whose
+`https://opencode.ai/workspace/<workspace-id>/go` page shows your Go usage.
 
 ---
 
