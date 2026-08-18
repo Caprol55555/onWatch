@@ -148,6 +148,9 @@ func (c *OpenCodeClient) fetchDashboardHTML(ctx context.Context, workspaceID, au
 
 	switch resp.StatusCode {
 	case http.StatusOK:
+		if openCodeLooksLikeLoginPage(string(body)) {
+			return "", ErrOpenCodeUnauthorized
+		}
 		return string(body), nil
 	case http.StatusUnauthorized:
 		return "", ErrOpenCodeUnauthorized
@@ -157,8 +160,23 @@ func (c *OpenCodeClient) fetchDashboardHTML(ctx context.Context, workspaceID, au
 		if resp.StatusCode >= 500 {
 			return "", fmt.Errorf("%w: http %d", ErrOpenCodeServerError, resp.StatusCode)
 		}
-		return "", fmt.Errorf("%w: http %d: %s", ErrOpenCodeInvalidResponse, resp.StatusCode, sanitizeOpenCodeMessage(string(body)))
+		return "", fmt.Errorf("%w: http %d", ErrOpenCodeInvalidResponse, resp.StatusCode)
 	}
+}
+
+func openCodeLooksLikeLoginPage(body string) bool {
+	lower := strings.ToLower(body)
+	if !strings.Contains(lower, "<html") {
+		return false
+	}
+	loginSignals := []string{"/auth/login", "sign in", "log in", "name=\"password\"", "name='password'"}
+	matches := 0
+	for _, signal := range loginSignals {
+		if strings.Contains(lower, signal) {
+			matches++
+		}
+	}
+	return matches >= 2
 }
 
 func openCodeAuthCookieHeader(authCookie string) string {
@@ -166,18 +184,6 @@ func openCodeAuthCookieHeader(authCookie string) string {
 		return authCookie
 	}
 	return "auth=" + authCookie
-}
-
-func sanitizeOpenCodeMessage(text string) string {
-	s := strings.TrimSpace(text)
-	if s == "" {
-		return "unknown"
-	}
-	s = strings.Join(strings.Fields(s), " ")
-	if len(s) > 120 {
-		s = s[:120]
-	}
-	return s
 }
 
 func parseOpenCodeQuotas(html string, capturedAt time.Time) ([]OpenCodeQuota, error) {

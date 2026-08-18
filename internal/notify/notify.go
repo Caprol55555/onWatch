@@ -705,7 +705,7 @@ func (e *NotificationEngine) SendAuthErrorNotification(alert AuthErrorAlert) boo
 	}
 
 	// Check if there's already an active alert of this type for this provider
-	hasActive, err := e.store.HasActiveAlertOfType(alert.Provider, alertType)
+	hasActive, err := e.store.HasActiveAlertOfTypeForAccount(alert.Provider, alertType, alert.AccountID)
 	if err != nil {
 		e.logger.Error("failed to check for existing alert", "error", err)
 	}

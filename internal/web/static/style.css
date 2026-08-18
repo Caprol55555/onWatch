@@ -4154,3 +4154,30 @@ body.accounts-overview-mode #sessions-section {
     animation: none;
   }
 }
+.provider-settings-action {
+  padding: 5px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--surface-inset);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.account-overview-badge[data-auth-status="needs_reauth"],
+.account-overview-badge[data-auth-status="unauthorized"],
+.account-overview-badge[data-auth-status="error"] {
+  color: var(--status-danger-text);
+  background: var(--status-danger-bg);
+}
+
+.account-overview-badge[data-auth-status="pending"],
+.account-overview-badge[data-auth-status="disabled"] {
+  color: var(--text-secondary);
+  background: var(--surface-inset);
+}
+
+.provider-settings-action:hover {
+  border-color: var(--md-primary, #6750a4);
+}

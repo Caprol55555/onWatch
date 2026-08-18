@@ -27,3 +27,21 @@ func TestAppJS_OpenCodeQuotaCardsRerenderWhenQuotaSetChanges(t *testing.T) {
 		t.Fatal("OpenCode quota set comparison must happen before in-place card updates")
 	}
 }
+
+func TestAppJS_OpenCodeAllAccountsUsesLatestOnlySummary(t *testing.T) {
+	t.Parallel()
+	appJS := readStaticAppJS(t)
+	if !strings.Contains(appJS, "provider === 'opencode' && State.openCodeAccount === 'all'") {
+		t.Fatal("OpenCode all-account mode is not wired")
+	}
+	if !strings.Contains(appJS, "/api/opencode/accounts/summary") {
+		t.Fatal("OpenCode all-account mode must use the latest-only summary endpoint")
+	}
+	guard := "if (requestProvider === 'opencode') {\n      if (State.chart) { State.chart.destroy(); State.chart = null; }\n      return;"
+	if !strings.Contains(appJS, guard) {
+		t.Fatal("OpenCode all-account mode must not load multi-account history")
+	}
+	if !strings.Contains(appJS, "account.authStatus") || !strings.Contains(appJS, "data-auth-status") {
+		t.Fatal("OpenCode all-account cards must display each account authentication status")
+	}
+}

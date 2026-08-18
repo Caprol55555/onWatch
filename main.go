@@ -768,6 +768,16 @@ func run() error {
 	// Apply provider_settings from DB (UI-configured keys/regions override .env)
 	if db != nil {
 		web.ApplyProviderSettingsFromDB(db, cfg, logger)
+		if err := db.BootstrapLegacyOpenCodeAccount(cfg.OpenCodeGoWorkspaceID, cfg.OpenCodeGoAuthCookie); err != nil {
+			return fmt.Errorf("failed to migrate OpenCode credentials: %w", err)
+		}
+		if accounts, err := db.QueryOpenCodeAccounts(false); err != nil {
+			return fmt.Errorf("failed to load OpenCode accounts: %w", err)
+		} else if len(accounts) > 0 {
+			cfg.OpenCodeAccountsConfigured = true
+			// The polling manager decrypts credentials only for a scheduled account.
+			cfg.OpenCodeGoAuthCookie = ""
+		}
 	}
 
 	// Create API clients based on configured providers
@@ -1088,10 +1098,7 @@ func run() error {
 	if cfg.HasProvider("kimi") {
 		kimiTr = tracker.NewKimiTracker(db, logger)
 	}
-	var opencodeTr *tracker.OpenCodeTracker
-	if cfg.HasProvider("opencode") {
-		opencodeTr = tracker.NewOpenCodeTracker(db, logger)
-	}
+	opencodeTr := tracker.NewOpenCodeTracker(db, logger)
 
 	var antigravityAg *agent.AntigravityAgent
 	if antigravityClient != nil {
@@ -1174,12 +1181,8 @@ func run() error {
 		kimiSm := agent.NewSessionManager(db, "kimi", idleTimeout, logger)
 		kimiAg = agent.NewKimiAgent(kimiClient, db, kimiTr, cfg.PollInterval, logger, kimiSm)
 	}
-	var opencodeAg *agent.OpenCodeAgent
-	if cfg.HasProvider("opencode") {
-		opencodeClient := api.NewOpenCodeClient(logger)
-		opencodeSm := agent.NewSessionManager(db, "opencode", idleTimeout, logger)
-		opencodeAg = agent.NewOpenCodeAgent(opencodeClient, db, opencodeTr, cfg, cfg.PollInterval, logger, opencodeSm)
-	}
+	opencodeClient := api.NewOpenCodeClient(logger)
+	opencodeAg := agent.NewOpenCodeAgentManager(opencodeClient, db, opencodeTr, cfg.PollInterval, logger)
 
 	var apiIntegrationsAg *agent.APIIntegrationsIngestAgent
 	if cfg.APIIntegrationsEnabled {
@@ -1473,11 +1476,9 @@ func run() error {
 			notifier.Check(notify.QuotaStatus{Provider: "kimi", QuotaKey: quotaName, ResetOccurred: true})
 		})
 	}
-	if opencodeTr != nil {
-		opencodeTr.SetOnReset(func(quotaName string) {
-			notifier.Check(notify.QuotaStatus{Provider: "opencode", QuotaKey: quotaName, ResetOccurred: true})
-		})
-	}
+	opencodeTr.SetOnResetForAccount(func(accountID int64, quotaName string) {
+		notifier.Check(notify.QuotaStatus{Provider: "opencode", QuotaKey: fmt.Sprintf("%d:%s", accountID, quotaName), ResetOccurred: true})
+	})
 
 	handler := web.NewHandler(db, tr, logger, nil, cfg, zaiTr)
 	handler.SetVersion(version)

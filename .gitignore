@@ -9,6 +9,7 @@
 *.db-journal
 *.db-wal
 *.db-shm
+*.pre-opencode-multi-account-*.bak
 
 # Binary
 /onwatch

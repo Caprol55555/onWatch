@@ -172,7 +172,7 @@ Open **http://localhost:9211** and log in with your `.env` credentials.
 - **Grok** -- xAI Grok Build / SuperGrok credits tracking via local `~/.grok/auth.json` (or `$GROK_HOME`), optional `grok agent stdio` RPC, and grok.com gRPC-web bearer probe (no browser cookie import). Primary "Credits" utilization against plan limit with reset countdown. Informational local session token stats also captured.
 - **Moonshot** -- Balance-based tracking for the Moonshot (Kimi) open-platform API. Available, Voucher, and Cash balance cards with drop-rate trends. Set `MOONSHOT_API_KEY`. See [Moonshot Setup](docs/MOONSHOT_SETUP.md).
 - **DeepSeek** -- Balance-based tracking for the DeepSeek platform API. Total, Granted, and Topped-Up balance cards with drop-rate trends. Set `DEEPSEEK_API_KEY`. See [DeepSeek Setup](docs/DEEPSEEK_SETUP.md).
-- **OpenCode Go** -- Subscription quota cards (5-Hour, Weekly, and Monthly when present) scraped from the authenticated OpenCode Go dashboard, with cycle history and deep insights. Set `OPENCODE_GO_WORKSPACE_ID` + `OPENCODE_GO_AUTH_COOKIE`. Separate from `OPENCODE_ENABLED`, which only feeds ChatGPT credentials into the Codex provider. See [OpenCode Setup](docs/OPENCODE_SETUP.md).
+- **OpenCode Go** -- Multi-account subscription quota cards (5-Hour, Weekly, and Monthly when present), isolated history, authentication health, and deep insights. Add accounts in Settings. The legacy `OPENCODE_GO_WORKSPACE_ID` + `OPENCODE_GO_AUTH_COOKIE` pair is imported once for compatibility. See [OpenCode Setup](docs/OPENCODE_SETUP.md).
 - **API Integrations** -- Local JSONL ingestion for custom API-driven workflows and automations. Track per-integration token volume, request counts, recent activity, costs, trends, and accumulated usage across separate API keys and providers.
 - **All** -- Side-by-side view of all configured providers
 - **Prometheus metrics endpoint (Beta)** -- Exposes `/metrics` for Prometheus/Grafana/Alertmanager integrations, with optional bearer token protection via `ONWATCH_METRICS_TOKEN`
@@ -344,6 +344,7 @@ Additional environment variables:
 | `DEEPSEEK_API_KEY`       | DeepSeek platform API key (enables balance tracking)   |
 | `OPENCODE_GO_WORKSPACE_ID` | OpenCode Go workspace ID (`wrk_...`) from the dashboard URL|
 | `OPENCODE_GO_AUTH_COOKIE` | OpenCode Go `auth` cookie value (enables quota tracking)|
+| `ONWATCH_CREDENTIAL_KEY` | Optional base64 or hex encoded 32-byte key for OpenCode Cookie encryption. A restricted sidecar key is generated when omitted. |
 | `ANTIGRAVITY_ENABLED`    | Enable Antigravity provider (auto-detects local server)|
 | `ANTIGRAVITY_SOURCE`     | Data source: `both` (default), `cli` (agy), or `ide`   |
 | `ANTIGRAVITY_CLI_PATH`   | Override path to the `agy` binary (else PATH/well-known)|

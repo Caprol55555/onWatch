@@ -242,3 +242,48 @@ func TestOpenCodeTracker_UsageSummary(t *testing.T) {
 		t.Errorf("CurrentUtil = %f, want 20", summary.CurrentUtil)
 	}
 }
+
+func TestOpenCodeTracker_IsolatesSameQuotaAcrossAccounts(t *testing.T) {
+	s := newTestOpenCodeStore(t)
+	tr := NewOpenCodeTracker(s, slog.Default())
+	a, err := s.CreateOpenCodeAccount("A", "ws-a", "cookie-a", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.CreateOpenCodeAccount("B", "ws-b", "cookie-b", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	reset := now.Add(7 * 24 * time.Hour)
+	for _, sample := range []struct {
+		accountID int64
+		captured  time.Time
+		util      float64
+	}{
+		{a.AccountID, now, 10},
+		{b.AccountID, now, 80},
+		{a.AccountID, now.Add(time.Minute), 20},
+		{b.AccountID, now.Add(time.Minute), 85},
+	} {
+		snapshot := &api.OpenCodeSnapshot{CapturedAt: sample.captured, Quotas: []api.OpenCodeQuota{{Name: "weekly", Utilization: sample.util, Format: api.OpenCodeQuotaFormatPercent, ResetsAt: &reset}}}
+		if err := tr.ProcessForAccount(sample.accountID, snapshot); err != nil {
+			t.Fatalf("ProcessForAccount(%d): %v", sample.accountID, err)
+		}
+	}
+
+	cycleA, err := s.QueryActiveOpenCodeCycleForAccount(a.AccountID, "weekly")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cycleB, err := s.QueryActiveOpenCodeCycleForAccount(b.AccountID, "weekly")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cycleA == nil || cycleA.PeakUtilization != 20 || cycleA.TotalDelta != 10 {
+		t.Fatalf("account A cycle mixed: %+v", cycleA)
+	}
+	if cycleB == nil || cycleB.PeakUtilization != 85 || cycleB.TotalDelta != 5 {
+		t.Fatalf("account B cycle mixed: %+v", cycleB)
+	}
+}

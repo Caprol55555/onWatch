@@ -1,22 +1,209 @@
 package web
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/onllm-dev/onwatch/v2/internal/api"
 	"github.com/onllm-dev/onwatch/v2/internal/tracker"
 )
 
+const openCodeAccountRequestLimit = 32 << 10
+
+type openCodeAccountRequest struct {
+	Name        string `json:"name"`
+	WorkspaceID string `json:"workspace_id"`
+	AuthCookie  string `json:"auth_cookie"`
+	Enabled     bool   `json:"enabled"`
+}
+
+func decodeOpenCodeAccountRequest(w http.ResponseWriter, r *http.Request) (openCodeAccountRequest, error) {
+	var req openCodeAccountRequest
+	r.Body = http.MaxBytesReader(w, r.Body, openCodeAccountRequestLimit)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		return req, err
+	}
+	req.Name, req.WorkspaceID, req.AuthCookie = strings.TrimSpace(req.Name), strings.TrimSpace(req.WorkspaceID), strings.TrimSpace(req.AuthCookie)
+	if req.Name == "" || len(req.Name) > 80 || req.WorkspaceID == "" || len(req.WorkspaceID) > 256 || len(req.AuthCookie) > 16384 {
+		return req, fmt.Errorf("invalid account fields")
+	}
+	return req, nil
+}
+
+// OpenCodeAccounts manages encrypted OpenCode Go account credentials.
+func (h *Handler) OpenCodeAccounts(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		respondError(w, http.StatusServiceUnavailable, "storage unavailable")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		accounts, err := h.store.QueryOpenCodeAccounts(false)
+		if err != nil {
+			h.logger.Error("failed to list OpenCode accounts", "error", err)
+			respondError(w, http.StatusInternalServerError, "failed to list accounts")
+			return
+		}
+		respondJSON(w, http.StatusOK, map[string]any{"accounts": accounts})
+	case http.MethodPost:
+		req, err := decodeOpenCodeAccountRequest(w, r)
+		if err != nil || req.AuthCookie == "" {
+			respondError(w, http.StatusBadRequest, "name, workspace_id, and auth_cookie are required")
+			return
+		}
+		account, err := h.store.CreateOpenCodeAccount(req.Name, req.WorkspaceID, req.AuthCookie, req.Enabled)
+		if err != nil {
+			h.logger.Warn("failed to create OpenCode account", "error", err)
+			respondError(w, http.StatusConflict, "could not create account")
+			return
+		}
+		if h.config != nil {
+			h.config.OpenCodeAccountsConfigured = true
+		}
+		if h.agentManager != nil && h.providerPollingEnabled("opencode", h.providerVisibilityMap()) {
+			if err := h.agentManager.Start("opencode"); err != nil {
+				h.logger.Warn("failed to start OpenCode polling after account creation", "error", err)
+			}
+		}
+		respondJSON(w, http.StatusCreated, account)
+	case http.MethodPut:
+		accountID, err := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+		if err != nil || accountID <= 0 {
+			respondError(w, http.StatusBadRequest, "valid id is required")
+			return
+		}
+		existing, err := h.store.GetOpenCodeAccount(accountID, false)
+		if err != nil || existing == nil || existing.DeletedAt != nil {
+			respondError(w, http.StatusNotFound, "account not found")
+			return
+		}
+		req, err := decodeOpenCodeAccountRequest(w, r)
+		if err != nil {
+			respondError(w, http.StatusBadRequest, "invalid account")
+			return
+		}
+		var cookie *string
+		if req.AuthCookie != "" {
+			cookie = &req.AuthCookie
+		}
+		account, err := h.store.UpdateOpenCodeAccount(accountID, req.Name, req.WorkspaceID, cookie, req.Enabled)
+		if err != nil {
+			h.logger.Warn("failed to update OpenCode account", "account_id", accountID, "error", err)
+			respondError(w, http.StatusConflict, "could not update account")
+			return
+		}
+		respondJSON(w, http.StatusOK, account)
+	case http.MethodDelete:
+		accountID, err := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+		if err != nil || accountID <= 0 {
+			respondError(w, http.StatusBadRequest, "valid id is required")
+			return
+		}
+		existing, err := h.store.GetOpenCodeAccount(accountID, false)
+		if err != nil || existing == nil || existing.DeletedAt != nil {
+			respondError(w, http.StatusNotFound, "account not found")
+			return
+		}
+		if err := h.store.DeleteOpenCodeAccount(accountID); err != nil {
+			h.logger.Error("failed to delete OpenCode account", "account_id", accountID, "error", err)
+			respondError(w, http.StatusInternalServerError, "could not delete account")
+			return
+		}
+		if h.config != nil {
+			accounts, queryErr := h.store.QueryOpenCodeAccounts(false)
+			if queryErr == nil {
+				h.config.OpenCodeAccountsConfigured = len(accounts) > 0
+				if len(accounts) == 0 && h.agentManager != nil {
+					h.agentManager.Stop("opencode")
+				}
+			}
+		}
+		respondJSON(w, http.StatusOK, map[string]bool{"deleted": true})
+	default:
+		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+// OpenCodeAccountsSummary returns one latest snapshot per account and never historical series.
+func (h *Handler) OpenCodeAccountsSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.store == nil {
+		respondJSON(w, http.StatusOK, map[string]any{"accounts": []any{}})
+		return
+	}
+	summaries, err := h.store.QueryOpenCodeAccountSummaries()
+	if err != nil {
+		h.logger.Error("failed to query OpenCode account summaries", "error", err)
+		respondError(w, http.StatusInternalServerError, "failed to query summaries")
+		return
+	}
+	accounts := make([]map[string]any, 0, len(summaries))
+	for _, summary := range summaries {
+		entry := map[string]any{
+			"id": summary.Account.AccountID, "accountId": summary.Account.AccountID,
+			"name": summary.Account.Name, "accountName": summary.Account.Name,
+			"workspaceId": summary.Account.WorkspaceID, "enabled": summary.Account.Enabled,
+			"authStatus": summary.Account.AuthStatus, "quotas": []map[string]any{},
+		}
+		if summary.Snapshot != nil {
+			entry["capturedAt"] = summary.Snapshot.CapturedAt.Format(time.RFC3339)
+			entry["planName"] = summary.Snapshot.PlanName
+			quotas := make([]map[string]any, 0, len(summary.Snapshot.Quotas))
+			for _, q := range summary.Snapshot.Quotas {
+				item := map[string]any{"name": q.Name, "displayName": opencodeDisplayName(q.Name), "utilization": q.Utilization, "used": q.Used, "limit": q.Limit, "format": q.Format, "status": utilStatus(q.Utilization)}
+				if q.ResetsAt != nil {
+					item["resetsAt"] = q.ResetsAt.Format(time.RFC3339)
+				}
+				quotas = append(quotas, item)
+			}
+			entry["quotas"] = quotas
+		}
+		accounts = append(accounts, entry)
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"accounts": accounts})
+}
+
 // SetOpenCodeTracker sets the OpenCode tracker for usage summary enrichment.
 func (h *Handler) SetOpenCodeTracker(t *tracker.OpenCodeTracker) {
 	h.opencodeTracker = t
 }
 
-func (h *Handler) currentOpenCode(w http.ResponseWriter, _ *http.Request) {
-	respondJSON(w, http.StatusOK, h.buildOpenCodeCurrent())
+func (h *Handler) openCodeAccountID(r *http.Request) (int64, error) {
+	if h.store == nil {
+		return 0, fmt.Errorf("storage unavailable")
+	}
+	raw := strings.TrimSpace(r.URL.Query().Get("account"))
+	if raw == "" {
+		return h.store.DefaultOpenCodeAccountID()
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 {
+		return 0, fmt.Errorf("invalid account")
+	}
+	account, err := h.store.GetOpenCodeAccount(id, false)
+	if err != nil || account == nil || account.DeletedAt != nil {
+		return 0, fmt.Errorf("account not found")
+	}
+	return id, nil
+}
+
+func (h *Handler) currentOpenCode(w http.ResponseWriter, r *http.Request) {
+	accountID, err := h.openCodeAccountID(r)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, h.buildOpenCodeCurrentForAccount(accountID))
 }
 
 // opencodeInsightsResponse is the JSON payload for OpenCode deep insights.
@@ -72,6 +259,14 @@ type opencodeQuotaRate struct {
 }
 
 func (h *Handler) computeOpenCodeRate(quotaName string, currentUtil float64, summary *tracker.OpenCodeSummary) opencodeQuotaRate {
+	accountID, err := h.store.DefaultOpenCodeAccountID()
+	if err != nil {
+		return opencodeQuotaRate{}
+	}
+	return h.computeOpenCodeRateForAccount(accountID, quotaName, currentUtil, summary)
+}
+
+func (h *Handler) computeOpenCodeRateForAccount(accountID int64, quotaName string, currentUtil float64, summary *tracker.OpenCodeSummary) opencodeQuotaRate {
 	var result opencodeQuotaRate
 
 	if summary != nil && summary.ResetsAt != nil {
@@ -79,7 +274,7 @@ func (h *Handler) computeOpenCodeRate(quotaName string, currentUtil float64, sum
 	}
 
 	if h.store != nil {
-		points, err := h.store.QueryOpenCodeUtilizationSeries(quotaName, time.Now().Add(-30*time.Minute))
+		points, err := h.store.QueryOpenCodeUtilizationSeriesForAccount(accountID, quotaName, time.Now().Add(-30*time.Minute), 200)
 		if err == nil && len(points) >= 2 {
 			first := points[0]
 			last := points[len(points)-1]
@@ -179,6 +374,69 @@ func buildOpenCodeBurnRateInsight(quota api.OpenCodeQuota, rate opencodeQuotaRat
 }
 
 func (h *Handler) buildOpenCodeCurrent() map[string]interface{} {
+	if h.store == nil {
+		return map[string]interface{}{"capturedAt": time.Now().UTC().Format(time.RFC3339), "quotas": []interface{}{}}
+	}
+	accountID, err := h.store.DefaultOpenCodeAccountID()
+	if err != nil {
+		return map[string]interface{}{"capturedAt": time.Now().UTC().Format(time.RFC3339), "quotas": []interface{}{}}
+	}
+	return h.buildOpenCodeCurrentForAccount(accountID)
+}
+
+func (h *Handler) buildOpenCodeAggregateCurrent() map[string]interface{} {
+	now := time.Now().UTC()
+	response := map[string]interface{}{"capturedAt": now.Format(time.RFC3339), "quotas": []interface{}{}, "accountCount": 0}
+	if h.store == nil {
+		return response
+	}
+	summaries, err := h.store.QueryOpenCodeAccountSummaries()
+	if err != nil {
+		return response
+	}
+	response["accountCount"] = len(summaries)
+	worst := make(map[string]api.OpenCodeQuota)
+	var latest time.Time
+	needsReauth := 0
+	for _, summary := range summaries {
+		if summary.Account.AuthStatus == "needs_reauth" || summary.Account.AuthStatus == "unauthorized" {
+			needsReauth++
+		}
+		if summary.Snapshot == nil {
+			continue
+		}
+		if summary.Snapshot.CapturedAt.After(latest) {
+			latest = summary.Snapshot.CapturedAt
+		}
+		for _, quota := range summary.Snapshot.Quotas {
+			if previous, ok := worst[quota.Name]; !ok || quota.Utilization > previous.Utilization {
+				worst[quota.Name] = quota
+			}
+		}
+	}
+	response["needsReauthCount"] = needsReauth
+	if !latest.IsZero() {
+		response["capturedAt"] = latest.Format(time.RFC3339)
+	}
+	names := make([]string, 0, len(worst))
+	for name := range worst {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool { return opencodeQuotaOrder(names[i]) < opencodeQuotaOrder(names[j]) })
+	quotas := make([]interface{}, 0, len(names))
+	for _, name := range names {
+		q := worst[name]
+		item := map[string]interface{}{"name": q.Name, "displayName": opencodeDisplayName(q.Name), "utilization": q.Utilization, "used": q.Used, "limit": q.Limit, "format": q.Format, "status": utilStatus(q.Utilization)}
+		if q.ResetsAt != nil {
+			item["resetsAt"] = q.ResetsAt.Format(time.RFC3339)
+		}
+		quotas = append(quotas, item)
+	}
+	response["quotas"] = quotas
+	return response
+}
+
+func (h *Handler) buildOpenCodeCurrentForAccount(accountID int64) map[string]interface{} {
 	now := time.Now().UTC()
 	response := map[string]interface{}{
 		"capturedAt": now.Format(time.RFC3339),
@@ -189,7 +447,7 @@ func (h *Handler) buildOpenCodeCurrent() map[string]interface{} {
 		return response
 	}
 
-	latest, err := h.store.QueryLatestOpenCode()
+	latest, err := h.store.QueryLatestOpenCodeForAccount(accountID)
 	if err != nil || latest == nil {
 		return response
 	}
@@ -198,7 +456,7 @@ func (h *Handler) buildOpenCodeCurrent() map[string]interface{} {
 	response["accountType"] = string(latest.AccountType)
 	response["planName"] = latest.PlanName
 
-	latestPerQuota, err := h.store.QueryOpenCodeLatestPerQuota()
+	latestPerQuota, err := h.store.QueryOpenCodeLatestPerQuotaForAccount(accountID)
 	if err != nil || len(latestPerQuota) == 0 {
 		for _, q := range latest.Quotas {
 			quotaMap := map[string]interface{}{
@@ -219,7 +477,7 @@ func (h *Handler) buildOpenCodeCurrent() map[string]interface{} {
 				quotaMap["timeUntilResetSeconds"] = int64(timeUntilReset.Seconds())
 			}
 			if h.opencodeTracker != nil {
-				if summary, sErr := h.opencodeTracker.UsageSummary(q.Name); sErr == nil && summary != nil {
+				if summary, sErr := h.opencodeTracker.UsageSummaryForAccount(accountID, q.Name); sErr == nil && summary != nil {
 					quotaMap["currentRate"] = summary.CurrentRate
 					quotaMap["projectedUtil"] = summary.ProjectedUtil
 				}
@@ -261,7 +519,7 @@ func (h *Handler) buildOpenCodeCurrent() map[string]interface{} {
 			qMap["timeUntilResetSeconds"] = int64(timeUntilReset.Seconds())
 		}
 		if h.opencodeTracker != nil {
-			if summary, sErr := h.opencodeTracker.UsageSummary(q.Name); sErr == nil && summary != nil {
+			if summary, sErr := h.opencodeTracker.UsageSummaryForAccount(accountID, q.Name); sErr == nil && summary != nil {
 				qMap["currentRate"] = summary.CurrentRate
 				qMap["projectedUtil"] = summary.ProjectedUtil
 			}
@@ -304,7 +562,12 @@ func (h *Handler) historyOpenCode(w http.ResponseWriter, r *http.Request) {
 		start = now.Add(-7 * 24 * time.Hour)
 	}
 
-	snapshots, err := h.store.QueryOpenCodeRange(start, now, 200)
+	accountID, accountErr := h.openCodeAccountID(r)
+	if accountErr != nil {
+		respondError(w, http.StatusBadRequest, accountErr.Error())
+		return
+	}
+	snapshots, err := h.store.QueryOpenCodeRangeForAccount(accountID, start, now, 200)
 	if err != nil {
 		h.logger.Error("failed to query OpenCode history", "error", err)
 		respondError(w, http.StatusInternalServerError, "failed to query history")
@@ -352,14 +615,19 @@ func (h *Handler) cyclesOpenCode(w http.ResponseWriter, r *http.Request) {
 		quotaName = "five_hour"
 	}
 
-	active, err := h.store.QueryActiveOpenCodeCycle(quotaName)
+	accountID, accountErr := h.openCodeAccountID(r)
+	if accountErr != nil {
+		respondError(w, http.StatusBadRequest, accountErr.Error())
+		return
+	}
+	active, err := h.store.QueryActiveOpenCodeCycleForAccount(accountID, quotaName)
 	if err != nil {
 		h.logger.Error("failed to query active OpenCode cycle", "error", err)
 		respondError(w, http.StatusInternalServerError, "failed to query cycles")
 		return
 	}
 
-	history, err := h.store.QueryOpenCodeCycleHistory(quotaName, 50)
+	history, err := h.store.QueryOpenCodeCycleHistoryForAccount(accountID, quotaName, 50)
 	if err != nil {
 		h.logger.Error("failed to query OpenCode cycle history", "error", err)
 		respondError(w, http.StatusInternalServerError, "failed to query cycles")
@@ -415,7 +683,12 @@ func (h *Handler) cycleOverviewOpenCode(w http.ResponseWriter, r *http.Request) 
 		groupBy = "five_hour"
 	}
 
-	overview, err := h.store.QueryOpenCodeCycleOverview(groupBy, 50)
+	accountID, accountErr := h.openCodeAccountID(r)
+	if accountErr != nil {
+		respondError(w, http.StatusBadRequest, accountErr.Error())
+		return
+	}
+	overview, err := h.store.QueryOpenCodeCycleOverviewForAccount(accountID, groupBy, 50)
 	if err != nil {
 		h.logger.Error("failed to query OpenCode cycle overview", "error", err)
 		respondError(w, http.StatusInternalServerError, "failed to query cycle overview")
@@ -427,12 +700,22 @@ func (h *Handler) cycleOverviewOpenCode(w http.ResponseWriter, r *http.Request) 
 
 func (h *Handler) summaryOpenCode(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	respondJSON(w, http.StatusOK, h.buildOpenCodeSummaryMap())
+	accountID, err := h.openCodeAccountID(r)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, h.buildOpenCodeSummaryMapForAccount(accountID))
 }
 
-func (h *Handler) insightsOpenCode(w http.ResponseWriter, _ *http.Request, rangeDur time.Duration) {
+func (h *Handler) insightsOpenCode(w http.ResponseWriter, r *http.Request, rangeDur time.Duration) {
+	accountID, err := h.openCodeAccountID(r)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	hidden := h.getHiddenInsightKeys()
-	respondJSON(w, http.StatusOK, h.buildOpenCodeInsights(hidden, rangeDur))
+	respondJSON(w, http.StatusOK, h.buildOpenCodeInsightsForAccount(accountID, hidden, rangeDur))
 }
 
 func (h *Handler) opencodeQuotaNames() []string {
@@ -447,11 +730,22 @@ func (h *Handler) opencodeQuotaNames() []string {
 }
 
 func (h *Handler) buildOpenCodeSummaryMap() map[string]interface{} {
+	if h.store == nil {
+		return map[string]interface{}{}
+	}
+	accountID, err := h.store.DefaultOpenCodeAccountID()
+	if err != nil {
+		return map[string]interface{}{}
+	}
+	return h.buildOpenCodeSummaryMapForAccount(accountID)
+}
+
+func (h *Handler) buildOpenCodeSummaryMapForAccount(accountID int64) map[string]interface{} {
 	if h.store == nil || h.opencodeTracker == nil {
 		return map[string]interface{}{}
 	}
 
-	quotaNames, err := h.store.QueryAllOpenCodeQuotaNames()
+	quotaNames, err := h.store.QueryAllOpenCodeQuotaNamesForAccount(accountID)
 	if err != nil {
 		h.logger.Error("failed to query OpenCode quota names", "error", err)
 		return map[string]interface{}{}
@@ -459,7 +753,7 @@ func (h *Handler) buildOpenCodeSummaryMap() map[string]interface{} {
 
 	result := make(map[string]interface{})
 	for _, name := range quotaNames {
-		summary, err := h.opencodeTracker.UsageSummary(name)
+		summary, err := h.opencodeTracker.UsageSummaryForAccount(accountID, name)
 		if err != nil || summary == nil {
 			continue
 		}
@@ -480,13 +774,24 @@ func (h *Handler) buildOpenCodeSummaryMap() map[string]interface{} {
 }
 
 func (h *Handler) buildOpenCodeInsights(hidden map[string]bool, _ time.Duration) opencodeInsightsResponse {
+	if h.store == nil {
+		return opencodeInsightsResponse{Stats: []opencodeInsightStat{}, Insights: []insightItem{}}
+	}
+	accountID, err := h.store.DefaultOpenCodeAccountID()
+	if err != nil {
+		return opencodeInsightsResponse{Stats: []opencodeInsightStat{}, Insights: []insightItem{}}
+	}
+	return h.buildOpenCodeInsightsForAccount(accountID, hidden, 0)
+}
+
+func (h *Handler) buildOpenCodeInsightsForAccount(accountID int64, hidden map[string]bool, _ time.Duration) opencodeInsightsResponse {
 	resp := opencodeInsightsResponse{Stats: []opencodeInsightStat{}, Insights: []insightItem{}}
 
 	if h.store == nil {
 		return resp
 	}
 
-	latest, err := h.store.QueryLatestOpenCode()
+	latest, err := h.store.QueryLatestOpenCodeForAccount(accountID)
 	if err != nil || latest == nil || len(latest.Quotas) == 0 {
 		return resp
 	}
@@ -515,7 +820,7 @@ func (h *Handler) buildOpenCodeInsights(hidden map[string]bool, _ time.Duration)
 	summaries := map[string]*tracker.OpenCodeSummary{}
 	if h.opencodeTracker != nil {
 		for _, quota := range quotas {
-			summary, err := h.opencodeTracker.UsageSummary(quota.Name)
+			summary, err := h.opencodeTracker.UsageSummaryForAccount(accountID, quota.Name)
 			if err == nil && summary != nil {
 				summaries[quota.Name] = summary
 			}
@@ -537,7 +842,7 @@ func (h *Handler) buildOpenCodeInsights(hidden map[string]bool, _ time.Duration)
 	}
 
 	for _, quota := range selected {
-		rate := h.computeOpenCodeRate(quota.Name, quota.Utilization, summaries[quota.Name])
+		rate := h.computeOpenCodeRateForAccount(accountID, quota.Name, quota.Utilization, summaries[quota.Name])
 		insightKey := fmt.Sprintf("forecast_%s", quota.Name)
 		if hidden[insightKey] {
 			continue
@@ -568,7 +873,12 @@ func (h *Handler) loggingHistoryOpenCode(w http.ResponseWriter, r *http.Request)
 	}
 
 	start, end, limit := h.loggingHistoryRangeAndLimit(r)
-	snapshots, err := h.store.QueryOpenCodeRange(start, end, limit)
+	accountID, accountErr := h.openCodeAccountID(r)
+	if accountErr != nil {
+		respondError(w, http.StatusBadRequest, accountErr.Error())
+		return
+	}
+	snapshots, err := h.store.QueryOpenCodeRangeForAccount(accountID, start, end, limit)
 	if err != nil {
 		h.logger.Error("failed to query OpenCode snapshots", "error", err)
 		respondError(w, http.StatusInternalServerError, "failed to query logging history")

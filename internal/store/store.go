@@ -19,7 +19,9 @@ import (
 
 // Store provides SQLite storage for onWatch
 type Store struct {
-	db *sql.DB
+	db                    *sql.DB
+	dbPath                string
+	openCodeCredentialKey []byte
 }
 
 // Session represents an agent session
@@ -180,6 +182,7 @@ func New(dbPath string) (*Store, error) {
 	pragmas := []string{
 		"PRAGMA journal_mode=WAL;",
 		"PRAGMA synchronous=NORMAL;",
+		"PRAGMA secure_delete=ON;",
 		"PRAGMA cache_size=-500;",
 		"PRAGMA foreign_keys=ON;",
 		"PRAGMA busy_timeout=5000;",
@@ -191,7 +194,13 @@ func New(dbPath string) (*Store, error) {
 		}
 	}
 
-	s := &Store{db: db}
+	credentialKey, err := loadOrCreateOpenCodeCredentialKey(dbPath)
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to initialize credential encryption: %w", err)
+	}
+
+	s := &Store{db: db, dbPath: dbPath, openCodeCredentialKey: credentialKey}
 	if err := s.createTables(); err != nil {
 		return nil, fmt.Errorf("failed to create tables: %w", err)
 	}
@@ -779,17 +788,40 @@ func (s *Store) createTables() error {
 		CREATE INDEX IF NOT EXISTS idx_kimi_snapshots_account ON kimi_snapshots(account_id, captured_at);
 
 		-- OpenCode Go tables
+		CREATE TABLE IF NOT EXISTS opencode_accounts (
+			account_id INTEGER PRIMARY KEY,
+			workspace_id TEXT NOT NULL UNIQUE,
+			auth_cookie_ciphertext TEXT NOT NULL DEFAULT '',
+			enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+			auth_status TEXT NOT NULL DEFAULT 'pending' CHECK(auth_status IN ('valid', 'pending', 'needs_reauth', 'unauthorized', 'error', 'disabled')),
+			credential_version INTEGER NOT NULL DEFAULT 1,
+			consecutive_failures INTEGER NOT NULL DEFAULT 0,
+			last_poll_at TEXT,
+			last_success_at TEXT,
+			last_error_at TEXT,
+			last_error_code TEXT NOT NULL DEFAULT '',
+			next_poll_at TEXT,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			FOREIGN KEY (account_id) REFERENCES provider_accounts(id)
+		);
+
 		CREATE TABLE IF NOT EXISTS opencode_snapshots (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			account_id INTEGER NOT NULL,
 			captured_at TEXT NOT NULL,
 			raw_json TEXT NOT NULL DEFAULT '',
 			account_type TEXT NOT NULL DEFAULT '',
 			plan_name TEXT NOT NULL DEFAULT '',
-			quota_count INTEGER NOT NULL DEFAULT 0
+			quota_count INTEGER NOT NULL DEFAULT 0,
+			FOREIGN KEY (account_id) REFERENCES opencode_accounts(account_id),
+			UNIQUE(id, account_id),
+			UNIQUE(account_id, captured_at)
 		);
 
 		CREATE TABLE IF NOT EXISTS opencode_quota_values (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			account_id INTEGER NOT NULL,
 			snapshot_id INTEGER NOT NULL,
 			quota_name TEXT NOT NULL,
 			used REAL NOT NULL DEFAULT 0,
@@ -797,23 +829,24 @@ func (s *Store) createTables() error {
 			utilization REAL NOT NULL DEFAULT 0,
 			format TEXT NOT NULL DEFAULT 'percent',
 			resets_at TEXT,
-			FOREIGN KEY (snapshot_id) REFERENCES opencode_snapshots(id)
+			FOREIGN KEY (snapshot_id, account_id) REFERENCES opencode_snapshots(id, account_id) ON DELETE CASCADE,
+			UNIQUE(account_id, snapshot_id, quota_name)
 		);
 
 		CREATE TABLE IF NOT EXISTS opencode_reset_cycles (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			account_id INTEGER NOT NULL,
 			quota_name TEXT NOT NULL,
 			cycle_start TEXT NOT NULL,
 			cycle_end TEXT,
 			resets_at TEXT,
 			peak_utilization REAL NOT NULL DEFAULT 0,
-			total_delta REAL NOT NULL DEFAULT 0
+			total_delta REAL NOT NULL DEFAULT 0,
+			FOREIGN KEY (account_id) REFERENCES opencode_accounts(account_id)
 		);
 
-		CREATE INDEX IF NOT EXISTS idx_opencode_snapshots_captured ON opencode_snapshots(captured_at);
-		CREATE INDEX IF NOT EXISTS idx_opencode_quota_values_snapshot ON opencode_quota_values(snapshot_id);
-		CREATE INDEX IF NOT EXISTS idx_opencode_cycles_name_start ON opencode_reset_cycles(quota_name, cycle_start);
-		CREATE INDEX IF NOT EXISTS idx_opencode_cycles_name_active ON opencode_reset_cycles(quota_name, cycle_end) WHERE cycle_end IS NULL;
+		-- OpenCode multi-account indexes are created in migrateOpenCodeMultiAccount
+		-- so upgrades from the legacy tables do not reference missing columns.
 
 		-- API integrations telemetry ingestion tables
 		CREATE TABLE IF NOT EXISTS api_integration_usage_events (
@@ -1120,6 +1153,10 @@ func (s *Store) migrateSchema() error {
 				return fmt.Errorf("failed to add weekly column to minimax_model_values: %w", err)
 			}
 		}
+	}
+
+	if err := s.migrateOpenCodeMultiAccount(); err != nil {
+		return fmt.Errorf("failed OpenCode multi-account migration: %w", err)
 	}
 
 	// Drop raw_line column from api_integration_usage_events - no longer stored.
@@ -2425,6 +2462,22 @@ func (s *Store) HasActiveAlertOfType(provider, alertType string) (bool, error) {
 	`, provider, alertType).Scan(&count)
 	if err != nil {
 		return false, fmt.Errorf("store.HasActiveAlertOfType: %w", err)
+	}
+	return count > 0, nil
+}
+
+// HasActiveAlertOfTypeForAccount scopes auth-alert deduplication to one provider account.
+func (s *Store) HasActiveAlertOfTypeForAccount(provider, alertType, accountID string) (bool, error) {
+	if accountID == "" {
+		return s.HasActiveAlertOfType(provider, alertType)
+	}
+	var count int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM system_alerts WHERE provider = ? AND alert_type = ? AND dismissed_at IS NULL AND json_extract(COALESCE(metadata, '{}'), '$.account_id') = ?`,
+		provider, alertType, accountID,
+	).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("store.HasActiveAlertOfTypeForAccount: %w", err)
 	}
 	return count > 0, nil
 }

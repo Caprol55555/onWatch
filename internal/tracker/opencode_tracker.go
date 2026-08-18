@@ -3,6 +3,7 @@ package tracker
 import (
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/onllm-dev/onwatch/v2/internal/api"
@@ -14,13 +15,22 @@ const openCodeResetDriftTolerance = 90 * time.Minute
 type OpenCodeTracker struct {
 	store      *store.Store
 	logger     *slog.Logger
+	mu         sync.Mutex
 	lastValues map[string]float64
 	lastResets map[string]string
-	hasLast    bool
-	onReset    func(quotaName string)
+	hasLast    map[int64]bool
+	onReset    func(accountID int64, quotaName string)
 }
 
 func (t *OpenCodeTracker) SetOnReset(fn func(string)) {
+	if fn == nil {
+		t.onReset = nil
+		return
+	}
+	t.onReset = func(_ int64, quotaName string) { fn(quotaName) }
+}
+
+func (t *OpenCodeTracker) SetOnResetForAccount(fn func(accountID int64, quotaName string)) {
 	t.onReset = fn
 }
 
@@ -47,40 +57,52 @@ func NewOpenCodeTracker(store *store.Store, logger *slog.Logger) *OpenCodeTracke
 		logger:     logger,
 		lastValues: make(map[string]float64),
 		lastResets: make(map[string]string),
+		hasLast:    make(map[int64]bool),
 	}
 }
 
 func (t *OpenCodeTracker) Process(snapshot *api.OpenCodeSnapshot) error {
+	accountID, err := t.store.DefaultOpenCodeAccountID()
+	if err != nil {
+		return err
+	}
+	return t.ProcessForAccount(accountID, snapshot)
+}
+
+func (t *OpenCodeTracker) ProcessForAccount(accountID int64, snapshot *api.OpenCodeSnapshot) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	for _, quota := range snapshot.Quotas {
-		if err := t.processQuota(quota, snapshot.CapturedAt); err != nil {
+		if err := t.processQuota(accountID, quota, snapshot.CapturedAt); err != nil {
 			return fmt.Errorf("opencode tracker: %s: %w", quota.Name, err)
 		}
 	}
 
-	t.hasLast = true
+	t.hasLast[accountID] = true
 	return nil
 }
 
-func (t *OpenCodeTracker) processQuota(quota api.OpenCodeQuota, capturedAt time.Time) error {
+func (t *OpenCodeTracker) processQuota(accountID int64, quota api.OpenCodeQuota, capturedAt time.Time) error {
 	quotaName := quota.Name
+	stateKey := fmt.Sprintf("%d:%s", accountID, quotaName)
 	currentUtil := quota.Utilization
 
-	cycle, err := t.store.QueryActiveOpenCodeCycle(quotaName)
+	cycle, err := t.store.QueryActiveOpenCodeCycleForAccount(accountID, quotaName)
 	if err != nil {
 		return fmt.Errorf("failed to query active cycle: %w", err)
 	}
 
 	if cycle == nil {
-		_, err := t.store.CreateOpenCodeCycle(quotaName, capturedAt, quota.ResetsAt)
+		_, err := t.store.CreateOpenCodeCycleForAccount(accountID, quotaName, capturedAt, quota.ResetsAt)
 		if err != nil {
 			return fmt.Errorf("failed to create cycle: %w", err)
 		}
-		if err := t.store.UpdateOpenCodeCycle(quotaName, currentUtil, 0); err != nil {
+		if err := t.store.UpdateOpenCodeCycleForAccount(accountID, quotaName, currentUtil, 0); err != nil {
 			return fmt.Errorf("failed to set initial peak: %w", err)
 		}
-		t.lastValues[quotaName] = currentUtil
+		t.lastValues[stateKey] = currentUtil
 		if quota.ResetsAt != nil {
-			t.lastResets[quotaName] = quota.ResetsAt.Format(time.RFC3339Nano)
+			t.lastResets[stateKey] = quota.ResetsAt.Format(time.RFC3339Nano)
 		}
 		t.logger.Info("Created new OpenCode cycle",
 			"quota", quotaName,
@@ -121,8 +143,8 @@ func (t *OpenCodeTracker) processQuota(quota api.OpenCodeQuota, capturedAt time.
 			cycleEndTime = *cycle.ResetsAt
 		}
 
-		if t.hasLast {
-			if lastUtil, ok := t.lastValues[quotaName]; ok {
+		if t.hasLast[accountID] {
+			if lastUtil, ok := t.lastValues[stateKey]; ok {
 				delta := currentUtil - lastUtil
 				if delta > 0 {
 					cycle.TotalDelta += delta
@@ -133,20 +155,20 @@ func (t *OpenCodeTracker) processQuota(quota api.OpenCodeQuota, capturedAt time.
 			}
 		}
 
-		if err := t.store.CloseOpenCodeCycle(quotaName, cycleEndTime, cycle.PeakUtilization, cycle.TotalDelta); err != nil {
+		if err := t.store.CloseOpenCodeCycleForAccount(accountID, quotaName, cycleEndTime, cycle.PeakUtilization, cycle.TotalDelta); err != nil {
 			return fmt.Errorf("failed to close cycle: %w", err)
 		}
 
-		if _, err := t.store.CreateOpenCodeCycle(quotaName, capturedAt, quota.ResetsAt); err != nil {
+		if _, err := t.store.CreateOpenCodeCycleForAccount(accountID, quotaName, capturedAt, quota.ResetsAt); err != nil {
 			return fmt.Errorf("failed to create new cycle: %w", err)
 		}
-		if err := t.store.UpdateOpenCodeCycle(quotaName, currentUtil, 0); err != nil {
+		if err := t.store.UpdateOpenCodeCycleForAccount(accountID, quotaName, currentUtil, 0); err != nil {
 			return fmt.Errorf("failed to set initial peak: %w", err)
 		}
 
-		t.lastValues[quotaName] = currentUtil
+		t.lastValues[stateKey] = currentUtil
 		if quota.ResetsAt != nil {
-			t.lastResets[quotaName] = quota.ResetsAt.Format(time.RFC3339Nano)
+			t.lastResets[stateKey] = quota.ResetsAt.Format(time.RFC3339Nano)
 		}
 		t.logger.Info("Detected OpenCode quota reset",
 			"quota", quotaName,
@@ -157,13 +179,13 @@ func (t *OpenCodeTracker) processQuota(quota api.OpenCodeQuota, capturedAt time.
 			"totalDelta", cycle.TotalDelta,
 		)
 		if t.onReset != nil {
-			t.onReset(quotaName)
+			t.onReset(accountID, quotaName)
 		}
 		return nil
 	}
 
-	if t.hasLast {
-		if lastUtil, ok := t.lastValues[quotaName]; ok {
+	if t.hasLast[accountID] {
+		if lastUtil, ok := t.lastValues[stateKey]; ok {
 			delta := currentUtil - lastUtil
 			if delta > 0 {
 				cycle.TotalDelta += delta
@@ -171,13 +193,13 @@ func (t *OpenCodeTracker) processQuota(quota api.OpenCodeQuota, capturedAt time.
 			if currentUtil > cycle.PeakUtilization {
 				cycle.PeakUtilization = currentUtil
 			}
-			if err := t.store.UpdateOpenCodeCycle(quotaName, cycle.PeakUtilization, cycle.TotalDelta); err != nil {
+			if err := t.store.UpdateOpenCodeCycleForAccount(accountID, quotaName, cycle.PeakUtilization, cycle.TotalDelta); err != nil {
 				return fmt.Errorf("failed to update cycle: %w", err)
 			}
 		} else {
 			if currentUtil > cycle.PeakUtilization {
 				cycle.PeakUtilization = currentUtil
-				if err := t.store.UpdateOpenCodeCycle(quotaName, cycle.PeakUtilization, cycle.TotalDelta); err != nil {
+				if err := t.store.UpdateOpenCodeCycleForAccount(accountID, quotaName, cycle.PeakUtilization, cycle.TotalDelta); err != nil {
 					return fmt.Errorf("failed to update cycle: %w", err)
 				}
 			}
@@ -185,26 +207,34 @@ func (t *OpenCodeTracker) processQuota(quota api.OpenCodeQuota, capturedAt time.
 	} else {
 		if currentUtil > cycle.PeakUtilization {
 			cycle.PeakUtilization = currentUtil
-			if err := t.store.UpdateOpenCodeCycle(quotaName, cycle.PeakUtilization, cycle.TotalDelta); err != nil {
+			if err := t.store.UpdateOpenCodeCycleForAccount(accountID, quotaName, cycle.PeakUtilization, cycle.TotalDelta); err != nil {
 				return fmt.Errorf("failed to update cycle: %w", err)
 			}
 		}
 	}
 
-	t.lastValues[quotaName] = currentUtil
+	t.lastValues[stateKey] = currentUtil
 	if quota.ResetsAt != nil {
-		t.lastResets[quotaName] = quota.ResetsAt.Format(time.RFC3339Nano)
+		t.lastResets[stateKey] = quota.ResetsAt.Format(time.RFC3339Nano)
 	}
 	return nil
 }
 
 func (t *OpenCodeTracker) UsageSummary(quotaName string) (*OpenCodeSummary, error) {
-	activeCycle, err := t.store.QueryActiveOpenCodeCycle(quotaName)
+	accountID, err := t.store.DefaultOpenCodeAccountID()
+	if err != nil {
+		return nil, err
+	}
+	return t.UsageSummaryForAccount(accountID, quotaName)
+}
+
+func (t *OpenCodeTracker) UsageSummaryForAccount(accountID int64, quotaName string) (*OpenCodeSummary, error) {
+	activeCycle, err := t.store.QueryActiveOpenCodeCycleForAccount(accountID, quotaName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query active cycle: %w", err)
 	}
 
-	history, err := t.store.QueryOpenCodeCycleHistory(quotaName)
+	history, err := t.store.QueryOpenCodeCycleHistoryForAccount(accountID, quotaName, 200)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query cycle history: %w", err)
 	}
@@ -238,7 +268,7 @@ func (t *OpenCodeTracker) UsageSummary(quotaName string) (*OpenCodeSummary, erro
 			summary.TimeUntilReset = time.Until(*activeCycle.ResetsAt)
 		}
 
-		latest, err := t.store.QueryLatestOpenCode()
+		latest, err := t.store.QueryLatestOpenCodeForAccount(accountID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to query latest: %w", err)
 		}

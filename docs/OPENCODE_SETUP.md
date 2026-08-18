@@ -80,7 +80,18 @@ Treat this cookie like a password. Logging out of OpenCode, rotating sessions, o
 
 ---
 
-## 3. Configure onWatch
+## 3. Configure accounts
+
+The recommended path is the dashboard:
+
+1. Open **Settings -> Providers -> OpenCode Go**
+2. Select **Add Account**
+3. Enter a display name, Workspace ID, and Auth Cookie
+4. Repeat for every workspace you want to monitor
+
+Accounts can be edited, disabled, deleted, or given a replacement Cookie without restarting onWatch. Deleting an account immediately erases its encrypted Cookie while retaining its quota history.
+
+For backward compatibility, one legacy account can still be bootstrapped from `~/.onwatch/.env` (or a project `.env`):
 
 Add both values to `~/.onwatch/.env` (or your project `.env`):
 
@@ -89,19 +100,40 @@ OPENCODE_GO_WORKSPACE_ID=wrk_xxxxxxxx
 OPENCODE_GO_AUTH_COOKIE=your_auth_cookie_value
 ```
 
-Both are required. If either is missing, the OpenCode Go provider stays disabled.
+Both legacy values are required. On the first compatible startup, existing dashboard `provider_settings.opencode` values take precedence over the environment. onWatch encrypts the Cookie into the account table and removes the old plaintext fields. Environment values are ignored once a configured database account exists.
 
-You can also set them in the dashboard:
+For deployments that manage secrets externally, set a stable independent encryption key:
 
-1. Open **Settings → Providers → OpenCode Go**
-2. Paste **Workspace ID** and **Auth Cookie**
-3. Save
+```bash
+ONWATCH_CREDENTIAL_KEY=<base64-or-hex-encoded-32-byte-key>
+```
 
-Dashboard values override `.env` for the running process. A daemon restart may still be needed depending on how the agent was started.
+If this is omitted, onWatch generates `<database>.credential-key` with restrictive file permissions. Back up this key separately from the SQLite database. Losing it makes stored Cookies unrecoverable.
 
 ---
 
-## 4. Reload / Restart
+## 4. Migration backup and rollback
+
+Before converting legacy OpenCode telemetry tables, onWatch creates a consistent backup named:
+
+```text
+<database>.pre-opencode-multi-account-<UTC timestamp>.bak
+```
+
+Startup aborts if that backup cannot be created. The schema conversion and history ownership backfill then run in one SQLite transaction. Existing snapshots and cycles are assigned to the stable default OpenCode account.
+
+The pre-migration backup may contain the legacy plaintext Cookie. Protect it like a password and delete it through your normal secure-retention process after the rollback window expires.
+
+To roll back to an older binary:
+
+1. Stop onWatch
+2. Preserve the current database and credential-key sidecar
+3. Replace the database with the automatic `.bak` file
+4. Start the older binary
+
+Do not open a migrated database with an older binary and expect it to reverse the schema.
+
+## 5. Reload / Restart
 
 Reload providers from Settings if available, or restart onWatch:
 
@@ -120,12 +152,13 @@ You should see the OpenCode agent start when both credentials are present.
 
 ---
 
-## 5. Verify
+## 6. Verify
 
 - Open http://localhost:9211
 - Switch to the **OpenCode** tab
 - Confirm 5-Hour / Weekly cards populate (Monthly appears when OpenCode returns it)
 - Charts, cycle overview, and insights begin filling after a few polls
+- With multiple accounts, **All accounts** shows latest status cards only; select one account for history, cycles, sessions, and insights
 
 ---
 
@@ -137,13 +170,15 @@ The OpenCode Go tab shows:
 - Historical chart across tracked windows
 - Billing-cycle / usage-sample tables
 - Burn-rate insights for the active windows
+- Latest-only all-account summary with authentication status
 
 ---
 
 ## Security Notes
 
 - Never commit `.env` or paste the cookie into issue reports / logs
-- onWatch redacts `auth_cookie` from `/api/settings` responses
+- Cookies are encrypted with AES-256-GCM and account-bound authenticated data
+- Account APIs return only `has_auth_cookie`; they never return plaintext or ciphertext
 - Scraped HTML is not written to logs
 - All processing stays local on your machine
 
@@ -152,9 +187,15 @@ The OpenCode Go tab shows:
 ## Limitations & Notes
 
 - This integration depends on undocumented dashboard HTML. OpenCode UI changes can break parsing until onWatch is updated.
-- Auth failures and parse failures are surfaced as errors. onWatch does **not** invent fake currency quotas when scraping fails.
+- 401 responses, login redirects, and HTTP 200 login pages mark an account `needs_reauth`; 403 marks it `unauthorized`. Other failures use bounded retry backoff.
 - Cookie lifetime is controlled by OpenCode. Expect to refresh the cookie after logout or session rotation.
 - Workspace ID is required; onWatch does not auto-discover workspaces.
+
+## Resource and retention guidance
+
+OpenCode uses a fixed two-worker pool by default, a bounded queue, 10-second request timeouts, jitter, and finite backoff. With 11 accounts, the incremental steady-state memory budget is approximately 6-12 MiB; the two capped HTML responses account for at most 4 MiB of that. The full single binary should remain below the 128 MiB target under normal operation.
+
+At a 120-second interval, 11 accounts produce about 7,920 snapshots and up to 23,760 quota-value rows per day. Depending on quota count and SQLite page/index overhead, plan for roughly 6-15 MiB per day. No data is silently deleted in this release. A 30-90 day retention window is recommended, with a database backup before manual pruning. Dashboard history requests are bounded and only single-account history is graphed.
 
 ---
 
@@ -170,7 +211,7 @@ The OpenCode Go tab shows:
 
 1. Re-copy a fresh `auth` cookie while signed in
 2. Confirm the workspace ID matches the `/go` URL
-3. Restart onWatch
+3. In Settings, edit the affected account and replace the Cookie
 4. Open the Go dashboard in your browser and verify the page still loads
 
 ### Parse failed / response format changed

@@ -149,6 +149,37 @@ func TestOpenCodeClient_FetchSnapshot_RedirectIsUnauthorizedAndNotFollowed(t *te
 	}
 }
 
+func TestOpenCodeClient_FetchSnapshot_200LoginPageRequiresReauth(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html><head><title>Sign in - OpenCode</title></head><body><form action="/auth/login"><input name="password"></form></body></html>`))
+	}))
+	defer srv.Close()
+
+	client := newTestOpenCodeClient(t, srv)
+	_, err := client.FetchSnapshot(context.Background(), "ws", "expired-cookie")
+	if !errors.Is(err, ErrOpenCodeUnauthorized) {
+		t.Fatalf("err = %v, want ErrOpenCodeUnauthorized", err)
+	}
+}
+
+func TestOpenCodeClient_InvalidResponseDoesNotLeakBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+		_, _ = w.Write([]byte(`cookie=very-secret-value`))
+	}))
+	defer srv.Close()
+
+	client := newTestOpenCodeClient(t, srv)
+	_, err := client.FetchSnapshot(context.Background(), "ws", "cookie")
+	if !errors.Is(err, ErrOpenCodeInvalidResponse) {
+		t.Fatalf("err = %v, want ErrOpenCodeInvalidResponse", err)
+	}
+	if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "cookie") {
+		t.Fatalf("error leaked response body: %v", err)
+	}
+}
+
 func TestOpenCodeClient_FetchSnapshot_Malformed(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

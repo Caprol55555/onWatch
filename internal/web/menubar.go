@@ -409,7 +409,7 @@ func (h *Handler) buildMenubarProviders(settings *menubar.Settings, includeHidde
 		}
 	}
 	if h.config != nil && h.config.HasProvider("opencode") && h.providerDashboardVisible("opencode", visibility) {
-		payload := h.buildOpenCodeCurrent()
+		payload := h.buildOpenCodeAggregateCurrent()
 		if card := normalizeProviderCard("opencode", resolveProviderTabLabel("opencode", labels), "", payload, normalized.WarningPercent, normalized.CriticalPercent); card != nil {
 			providers = append(providers, *card)
 			if captured := parseCapturedAt(payload); captured.After(latest) {

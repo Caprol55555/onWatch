@@ -39,18 +39,19 @@ type Config struct {
 	CopilotToken string // COPILOT_TOKEN (GitHub PAT with copilot scope)
 
 	// Codex provider configuration
-	CodexToken         string // CODEX_TOKEN or auto-detected
-	CodexAutoToken     bool   // true if token was auto-detected
-	CodexAutoSource    string // "codex" | "opencode" when auto-detected (display/logging)
-	CodexHasProfiles   bool   // true if saved profiles exist (enables bootstrap without token)
-	OpenCodeEnabled    bool   // OPENCODE_ENABLED=true: track ChatGPT via OpenCode auth.json (feeds Codex)
+	CodexToken       string // CODEX_TOKEN or auto-detected
+	CodexAutoToken   bool   // true if token was auto-detected
+	CodexAutoSource  string // "codex" | "opencode" when auto-detected (display/logging)
+	CodexHasProfiles bool   // true if saved profiles exist (enables bootstrap without token)
+	OpenCodeEnabled  bool   // OPENCODE_ENABLED=true: track ChatGPT via OpenCode auth.json (feeds Codex)
 	// OpenCode Go provider configuration
-	OpenCodeGoWorkspaceID string // OPENCODE_GO_WORKSPACE_ID
-	OpenCodeGoAuthCookie  string // OPENCODE_GO_AUTH_COOKIE
-	CodexShowAvailable string // CODEX_SHOW_AVAILABLE: "usage" | "available", default "usage" (Codex-specific override)
-	CodexAutoStart5h   bool   // CODEX_AUTO_START_5H: auto-send a starter ping when the 5h window resets (Beta, default off)
-	CodexAutoStart7d   bool   // CODEX_AUTO_START_7D: auto-send a starter ping when the weekly window resets (Beta, default off)
-	DisplayMode        string // ONWATCH_DISPLAY_MODE: "usage" | "available", default "usage" (global, applies to all providers)
+	OpenCodeGoWorkspaceID      string // OPENCODE_GO_WORKSPACE_ID
+	OpenCodeGoAuthCookie       string // OPENCODE_GO_AUTH_COOKIE
+	OpenCodeAccountsConfigured bool   // true when encrypted OpenCode accounts exist in SQLite
+	CodexShowAvailable         string // CODEX_SHOW_AVAILABLE: "usage" | "available", default "usage" (Codex-specific override)
+	CodexAutoStart5h           bool   // CODEX_AUTO_START_5H: auto-send a starter ping when the 5h window resets (Beta, default off)
+	CodexAutoStart7d           bool   // CODEX_AUTO_START_7D: auto-send a starter ping when the weekly window resets (Beta, default off)
+	DisplayMode                string // ONWATCH_DISPLAY_MODE: "usage" | "available", default "usage" (global, applies to all providers)
 
 	// Antigravity provider configuration (auto-detected from local process)
 	AntigravityBaseURL   string // ANTIGRAVITY_BASE_URL (for Docker)
@@ -67,7 +68,7 @@ type Config struct {
 
 	// Moonshot provider configuration
 	MoonshotAPIKey string // MOONSHOT_API_KEY
-	
+
 	// DeepSeek provider configuration
 	DeepSeekAPIKey string // DEEPSEEK_API_KEY
 
@@ -377,10 +378,10 @@ func loadFromEnvAndFlags(flags *flagValues) (*Config, error) {
 
 	// OpenRouter provider
 	cfg.OpenRouterAPIKey = strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY"))
-	
+
 	// Moonshot provider
 	cfg.MoonshotAPIKey = strings.TrimSpace(os.Getenv("MOONSHOT_API_KEY"))
-	
+
 	// DeepSeek provider
 	cfg.DeepSeekAPIKey = strings.TrimSpace(os.Getenv("DEEPSEEK_API_KEY"))
 
@@ -722,7 +723,7 @@ func (c *Config) AvailableProviders() []string {
 	if c.KimiToken != "" || c.KimiEnabled {
 		providers = append(providers, "kimi")
 	}
-	if c.OpenCodeGoWorkspaceID != "" && c.OpenCodeGoAuthCookie != "" {
+	if c.OpenCodeAccountsConfigured || (c.OpenCodeGoWorkspaceID != "" && c.OpenCodeGoAuthCookie != "") {
 		providers = append(providers, "opencode")
 	}
 	return providers
@@ -760,7 +761,7 @@ func (c *Config) HasProvider(name string) bool {
 	case "kimi":
 		return c.KimiToken != "" || c.KimiEnabled
 	case "opencode":
-		return c.OpenCodeGoWorkspaceID != "" && c.OpenCodeGoAuthCookie != ""
+		return c.OpenCodeAccountsConfigured || (c.OpenCodeGoWorkspaceID != "" && c.OpenCodeGoAuthCookie != "")
 	}
 	return false
 }
@@ -810,7 +811,7 @@ func (c *Config) HasMultipleProviders() bool {
 	if c.KimiToken != "" || c.KimiEnabled {
 		count++
 	}
-	if c.OpenCodeGoWorkspaceID != "" && c.OpenCodeGoAuthCookie != "" {
+	if c.OpenCodeAccountsConfigured || (c.OpenCodeGoWorkspaceID != "" && c.OpenCodeGoAuthCookie != "") {
 		count++
 	}
 	return count > 1
@@ -852,7 +853,7 @@ func (c *Config) String() string {
 	// Redact MiniMax token
 	minimaxDisplay := redactAPIKey(c.MiniMaxAPIKey, "")
 	fmt.Fprintf(&sb, "  MiniMaxAPIKey: %s,\n", minimaxDisplay)
-	
+
 	// Redact Moonshot token
 	moonshotDisplay := redactAPIKey(c.MoonshotAPIKey, "")
 	fmt.Fprintf(&sb, "  MoonshotAPIKey: %s,\n", moonshotDisplay)
@@ -860,7 +861,7 @@ func (c *Config) String() string {
 	// Redact DeepSeek token
 	deepseekDisplay := redactAPIKey(c.DeepSeekAPIKey, "")
 	fmt.Fprintf(&sb, "  DeepSeekAPIKey: %s,\n", deepseekDisplay)
-	
+
 	fmt.Fprintf(&sb, "  APIIntegrationsEnabled: %v,\n", c.APIIntegrationsEnabled)
 	fmt.Fprintf(&sb, "  APIIntegrationsDir: %s,\n", c.APIIntegrationsDir)
 	fmt.Fprintf(&sb, "  APIIntegrationsRetention: %v,\n", c.APIIntegrationsRetention)
@@ -885,7 +886,10 @@ func (c *Config) String() string {
 	// Redact Kimi token
 	kimiDisplay := redactAPIKey(c.KimiToken, "")
 	fmt.Fprintf(&sb, "  KimiToken: %s,\n", kimiDisplay)
-	opencodeDisplay := redactAPIKey(c.OpenCodeGoAuthCookie, "")
+	opencodeDisplay := "(not set)"
+	if c.OpenCodeGoAuthCookie != "" || c.OpenCodeAccountsConfigured {
+		opencodeDisplay = "configured"
+	}
 	fmt.Fprintf(&sb, "  OpenCodeGoWorkspaceID: %s,\n", c.OpenCodeGoWorkspaceID)
 	fmt.Fprintf(&sb, "  OpenCodeGoAuthCookie: %s,\n", opencodeDisplay)
 	if c.KimiAutoToken {

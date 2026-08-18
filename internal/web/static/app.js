@@ -86,6 +86,8 @@ function providerParam() {
     param += codexAccountParam();
   } else if (provider === 'minimax') {
     param += minimaxAccountParam();
+  } else if (provider === 'opencode') {
+    param += openCodeAccountParam();
   }
   return param;
 }
@@ -95,7 +97,8 @@ function providerParam() {
 // (sessions/cycles/overview/insights) do not apply in this mode.
 function isAccountsOverviewMode(provider = getCurrentProvider()) {
   return (provider === 'codex' && State.codexAccount === 'all') ||
-         (provider === 'minimax' && State.minimaxAccount === 'all');
+         (provider === 'minimax' && State.minimaxAccount === 'all') ||
+         (provider === 'opencode' && State.openCodeAccount === 'all');
 }
 
 function shouldShowSessionsTable(provider = getCurrentProvider()) {
@@ -104,11 +107,11 @@ function shouldShowSessionsTable(provider = getCurrentProvider()) {
 }
 
 function shouldShowCyclesTable(provider = getCurrentProvider()) {
-  return provider !== 'both' && provider !== 'api-integrations';
+	return provider !== 'both' && provider !== 'api-integrations' && !isAccountsOverviewMode(provider);
 }
 
 function shouldShowOverviewTable(provider = getCurrentProvider()) {
-  return provider !== 'both' && provider !== 'gemini' && provider !== 'api-integrations';
+	return provider !== 'both' && provider !== 'gemini' && provider !== 'api-integrations' && !isAccountsOverviewMode(provider);
 }
 
 function shouldShowHistoryTables(provider = getCurrentProvider()) {
@@ -176,6 +179,8 @@ const State = {
   codexProfiles: [],
   codexPlanType: '',
   codexQuotaNames: [],
+  openCodeAccount: null,
+  openCodeAccounts: [],
   allProvidersCurrent: null,
   allProvidersInsights: null,
   allProvidersHistory: null,
@@ -614,6 +619,103 @@ function initMiniMaxAccountTabs() {
 function minimaxAccountParam() {
   if (!State.minimaxAccount || State.minimaxAccount === 'all') return '';
   return `&account=${encodeURIComponent(State.minimaxAccount)}`;
+}
+
+// ── OpenCode Go Account Persistence ──
+
+function loadOpenCodeAccount() {
+  try {
+    const stored = localStorage.getItem('onwatch-opencode-account');
+    if (stored === 'all') State.openCodeAccount = 'all';
+    else if (stored) {
+      const id = parseInt(stored, 10);
+      State.openCodeAccount = Number.isNaN(id) ? null : id;
+    }
+  } catch (_) { State.openCodeAccount = null; }
+}
+
+function saveOpenCodeAccount(account) {
+  State.openCodeAccount = account;
+  try { localStorage.setItem('onwatch-opencode-account', account); } catch (_) { /* non-critical */ }
+}
+
+async function loadOpenCodeAccounts() {
+  try {
+    const res = await authFetch(`${API_BASE}/api/opencode/accounts`);
+    if (!res.ok) return;
+    const data = await res.json();
+    State.openCodeAccounts = Array.isArray(data.accounts) ? data.accounts : [];
+    const stored = (() => { try { return localStorage.getItem('onwatch-opencode-account'); } catch (_) { return null; } })();
+    const storedId = stored === 'all' ? 'all' : parseInt(stored, 10);
+    if (storedId === 'all') State.openCodeAccount = 'all';
+    else if (!Number.isNaN(storedId) && State.openCodeAccounts.some(a => a.account_id === storedId)) State.openCodeAccount = storedId;
+    else State.openCodeAccount = State.openCodeAccounts.length > 1 ? 'all' : (State.openCodeAccounts[0]?.account_id || null);
+    populateOpenCodeAccountTabs();
+  } catch (_) { /* non-critical */ }
+}
+
+function populateOpenCodeAccountTabs() {
+  const dropdown = document.getElementById('opencode-profile-dropdown');
+  const menu = document.getElementById('opencode-profile-menu');
+  const label = document.getElementById('opencode-profile-label');
+  if (!dropdown || !menu) return;
+  dropdown.style.display = getCurrentProvider() === 'opencode' && State.openCodeAccounts.length > 1 ? '' : 'none';
+  menu.innerHTML = '';
+  const choices = State.openCodeAccounts.length > 1
+    ? [{ account_id: 'all', name: 'All accounts' }, ...State.openCodeAccounts]
+    : State.openCodeAccounts;
+  choices.forEach(account => {
+    const li = document.createElement('li');
+    li.className = 'codex-profile-item';
+    li.dataset.accountId = account.account_id;
+    li.textContent = account.name;
+    const active = account.account_id === 'all' ? State.openCodeAccount === 'all' : account.account_id === State.openCodeAccount;
+    li.classList.toggle('active', active);
+    li.setAttribute('role', 'option');
+    li.setAttribute('aria-selected', active ? 'true' : 'false');
+    li.addEventListener('click', () => { switchOpenCodeAccount(account.account_id); closeOpenCodeAccountDropdown(); });
+    menu.appendChild(li);
+  });
+  const active = State.openCodeAccount === 'all' ? { name: 'All accounts' } : State.openCodeAccounts.find(a => a.account_id === State.openCodeAccount);
+  if (label && active) label.textContent = active.name;
+}
+
+function switchOpenCodeAccount(account) {
+  const normalized = account === 'all' ? 'all' : parseInt(account, 10);
+  if (State.openCodeAccount === normalized) return;
+  saveOpenCodeAccount(normalized);
+  populateOpenCodeAccountTabs();
+  refreshAll();
+}
+
+function closeOpenCodeAccountDropdown() {
+  document.getElementById('opencode-profile-trigger')?.setAttribute('aria-expanded', 'false');
+  document.getElementById('opencode-profile-menu')?.classList.remove('open');
+}
+
+function initOpenCodeAccountTabs() {
+  const trigger = document.getElementById('opencode-profile-trigger');
+  const menu = document.getElementById('opencode-profile-menu');
+  if (!trigger || !menu) return;
+  trigger.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const open = menu.classList.toggle('open');
+    trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+  });
+  document.addEventListener('click', event => { if (!event.target.closest('#opencode-profile-dropdown')) closeOpenCodeAccountDropdown(); });
+  document.addEventListener('keydown', event => { if (event.key === 'Escape') closeOpenCodeAccountDropdown(); });
+}
+
+function openCodeAccountParam() {
+  if (!State.openCodeAccount || State.openCodeAccount === 'all') return '';
+  return `&account=${encodeURIComponent(State.openCodeAccount)}`;
+}
+
+function selectedAccountForProvider(provider) {
+  if (provider === 'codex') return State.codexAccount;
+  if (provider === 'minimax') return State.minimaxAccount;
+  if (provider === 'opencode') return State.openCodeAccount;
+  return null;
 }
 
 // ── Insight Visibility (DB-persisted) ──
@@ -3935,7 +4037,7 @@ function updateOpenCodeCard(quota) {
 
 async function fetchCurrent() {
   const requestProvider = getCurrentProvider();
-  const requestAccount = requestProvider === 'codex' ? State.codexAccount : null;
+  const requestAccount = selectedAccountForProvider(requestProvider);
   const requestSeq = (State.currentRequestSeq || 0) + 1;
   State.currentRequestSeq = requestSeq;
 
@@ -3992,7 +4094,7 @@ async function fetchCurrent() {
     requestAnimationFrame(() => {
       if (State.currentRequestSeq !== requestSeq) return;
       if (getCurrentProvider() !== requestProvider) return;
-      if (requestProvider === 'codex' && State.codexAccount !== requestAccount) return;
+      if (selectedAccountForProvider(requestProvider) !== requestAccount) return;
 
       const provider = requestProvider;
       if (provider === 'both') {
@@ -4228,6 +4330,15 @@ function accountOverviewQuotas(provider, account) {
       resetAt: q.resetAt || null,
     }));
   }
+  if (provider === 'opencode') {
+    return (account.quotas || []).map(q => ({
+      label: q.displayName || opencodeDisplayNames[q.name] || q.name,
+      quotaName: q.name,
+      percent: typeof q.utilization === 'number' ? q.utilization : 0,
+      status: q.status || 'healthy',
+      resetAt: q.resetsAt || null,
+    }));
+  }
   const visible = filterCodexQuotasForPlan(account.quotas || [], account.planType);
   return visible.map(q => ({
     label: q.displayName || codexDisplayNames[q.name] || q.name,
@@ -4242,7 +4353,12 @@ function accountOverviewQuotas(provider, account) {
 function accountOverviewCardHTML(provider, account, idx) {
   const accountId = account.accountId || account.id || idx + 1;
   const accountName = account.accountName || account.name || `Account ${accountId}`;
-  const badge = provider === 'codex' && account.planType ? formatCodexPlan(account.planType) : '';
+  const authStatus = provider === 'opencode' ? (account.authStatus || account.auth_status || 'pending') : '';
+  const authLabels = { valid: 'Valid', pending: 'Pending', needs_reauth: 'Needs re-auth', unauthorized: 'Unauthorized', error: 'Error', disabled: 'Disabled' };
+  const badge = provider === 'codex' && account.planType
+    ? formatCodexPlan(account.planType)
+    : (provider === 'opencode' ? (authLabels[authStatus] || authStatus) : '');
+  const badgeStatus = provider === 'opencode' ? ` data-auth-status="${escapeHTML(authStatus)}"` : '';
   const rows = accountOverviewQuotas(provider, account);
   const quotaHTML = rows.length === 0
     ? '<p class="empty-state">No quota data yet.</p>'
@@ -4267,7 +4383,7 @@ function accountOverviewCardHTML(provider, account, idx) {
   return `<article class="account-overview-card" data-account-id="${accountId}" data-provider="${provider}" role="button" tabindex="0" aria-label="Open ${escapeHTML(accountName)} details">
     <header class="account-overview-header">
       <span class="account-overview-name">${escapeHTML(accountName)}</span>
-      ${badge ? `<span class="account-overview-badge">${escapeHTML(badge)}</span>` : ''}
+      ${badge ? `<span class="account-overview-badge"${badgeStatus}>${escapeHTML(badge)}</span>` : ''}
     </header>
     <div class="account-overview-quotas">${quotaHTML}</div>
     <span class="account-overview-cta">View details &rarr;</span>
@@ -4288,6 +4404,7 @@ function renderAccountsOverview(provider, accounts) {
 
   const drill = (accountId) => {
     if (provider === 'minimax') switchMiniMaxAccount(accountId);
+    else if (provider === 'opencode') switchOpenCodeAccount(accountId);
     else switchCodexProfile(accountId);
   };
   container.querySelectorAll('.account-overview-card').forEach(card => {
@@ -4303,7 +4420,7 @@ function renderAccountsOverview(provider, accounts) {
 async function fetchAccountsOverview(provider, requestSeq) {
   const endpoint = provider === 'minimax'
     ? `${API_BASE}/api/minimax/accounts/usage`
-    : `${API_BASE}/api/codex/accounts/usage`;
+    : (provider === 'opencode' ? `${API_BASE}/api/opencode/accounts/summary` : `${API_BASE}/api/codex/accounts/usage`);
   try {
     const res = await authFetch(endpoint);
     if (!res.ok) throw new Error('Failed to fetch account usage');
@@ -4334,6 +4451,7 @@ function overviewAccounts(provider) {
     return State.accountsOverview.accounts.map(a => ({ id: a.accountId || a.id, name: a.accountName || a.name }));
   }
   if (provider === 'minimax') return (State.minimaxAccounts || []).map(a => ({ id: a.id, name: a.name }));
+  if (provider === 'opencode') return (State.openCodeAccounts || []).map(a => ({ id: a.account_id, name: a.name }));
   return (State.codexProfiles || []).map(p => ({ id: p.id, name: p.name }));
 }
 
@@ -4579,7 +4697,7 @@ async function fetchDeepInsights() {
   // Per-account insights don't apply to the aggregate all-accounts overview.
   if (isAccountsOverviewMode(provider)) return;
   const requestProvider = provider;
-  const requestAccount = requestProvider === 'codex' ? State.codexAccount : null;
+  const requestAccount = selectedAccountForProvider(requestProvider);
   const requestRange = State.insightsRange;
   const requestSeq = (State.insightsRequestSeq || 0) + 1;
   State.insightsRequestSeq = requestSeq;
@@ -4600,7 +4718,7 @@ async function fetchDeepInsights() {
 
     if (State.insightsRequestSeq !== requestSeq) return;
     if (getCurrentProvider() !== requestProvider) return;
-    if (requestProvider === 'codex' && State.codexAccount !== requestAccount) return;
+    if (selectedAccountForProvider(requestProvider) !== requestAccount) return;
     if (State.insightsRange !== requestRange) return;
 
     if (requestProvider === 'both') {
@@ -5279,12 +5397,16 @@ async function fetchHistory(range) {
   }
   State.currentRange = range;
   const requestProvider = getCurrentProvider();
-  const requestAccount = requestProvider === 'codex' ? State.codexAccount : null;
+  const requestAccount = selectedAccountForProvider(requestProvider);
   const requestRange = range;
   const requestSeq = (State.historyRequestSeq || 0) + 1;
   State.historyRequestSeq = requestSeq;
 
   if (isAccountsOverviewMode(requestProvider)) {
+    if (requestProvider === 'opencode') {
+      if (State.chart) { State.chart.destroy(); State.chart = null; }
+      return;
+    }
     await renderMultiAccountChart(requestProvider, range, requestSeq);
     return;
   }
@@ -5323,7 +5445,7 @@ async function fetchHistory(range) {
 
     if (State.historyRequestSeq !== requestSeq) return;
     if (getCurrentProvider() !== requestProvider) return;
-    if (requestProvider === 'codex' && State.codexAccount !== requestAccount) return;
+    if (selectedAccountForProvider(requestProvider) !== requestAccount) return;
     if (State.currentRange !== requestRange) return;
 
     const provider = requestProvider;
@@ -7180,7 +7302,7 @@ function updateTimeScale(chart, range) {
 async function fetchCycles() {
   if (!shouldShowCyclesTable()) return;
   const requestProvider = getCurrentProvider();
-  const requestAccount = requestProvider === 'codex' ? State.codexAccount : null;
+  const requestAccount = selectedAccountForProvider(requestProvider);
   const requestRange = State.cyclesRange;
   const requestSeq = (State.cyclesRequestSeq || 0) + 1;
   State.cyclesRequestSeq = requestSeq;
@@ -7244,7 +7366,7 @@ async function fetchCycles() {
       const data = await res.json();
       if (State.cyclesRequestSeq !== requestSeq) return;
       if (getCurrentProvider() !== requestProvider) return;
-      if (requestProvider === 'codex' && State.codexAccount !== requestAccount) return;
+      if (selectedAccountForProvider(requestProvider) !== requestAccount) return;
       if (State.cyclesRange !== requestRange) return;
 
       State.allCyclesData = (data.logs || []).map(log => ({
@@ -7274,7 +7396,7 @@ async function fetchCycles() {
     const data = await res.json();
     if (State.cyclesRequestSeq !== requestSeq) return;
     if (getCurrentProvider() !== requestProvider) return;
-    if (requestProvider === 'codex' && State.codexAccount !== requestAccount) return;
+    if (selectedAccountForProvider(requestProvider) !== requestAccount) return;
     if (State.cyclesRange !== requestRange) return;
 
     State.allCyclesData = data.cycles || [];
@@ -7621,7 +7743,7 @@ async function fetchSessions() {
     return;
   }
   if (sessionsEl) sessionsEl.hidden = false;
-  const requestAccount = requestProvider === 'codex' ? State.codexAccount : null;
+  const requestAccount = selectedAccountForProvider(requestProvider);
   const requestSeq = (State.sessionsRequestSeq || 0) + 1;
   State.sessionsRequestSeq = requestSeq;
 
@@ -7631,7 +7753,7 @@ async function fetchSessions() {
     const data = await res.json();
     if (State.sessionsRequestSeq !== requestSeq) return;
     if (getCurrentProvider() !== requestProvider) return;
-    if (requestProvider === 'codex' && State.codexAccount !== requestAccount) return;
+    if (selectedAccountForProvider(requestProvider) !== requestAccount) return;
 
     const provider = requestProvider;
 
@@ -8657,7 +8779,7 @@ async function fetchCycleOverview() {
   if (!shouldShowOverviewTable()) return;
   const provider = getCurrentProvider();
   const requestProvider = provider;
-  const requestAccount = requestProvider === 'codex' ? State.codexAccount : null;
+  const requestAccount = selectedAccountForProvider(requestProvider);
   const categories = getOverviewCategories();
   if (categories.length === 0) return;
   if (!categories.some(cat => cat.groupBy === State.overviewGroupBy)) {
@@ -8721,7 +8843,7 @@ async function fetchCycleOverview() {
     const data = await res.json();
     if (State.overviewRequestSeq !== requestSeq) return;
     if (getCurrentProvider() !== requestProvider) return;
-    if (requestProvider === 'codex' && State.codexAccount !== requestAccount) return;
+    if (selectedAccountForProvider(requestProvider) !== requestAccount) return;
     if (State.overviewGroupBy !== requestGroupBy) return;
 
     State.allOverviewData = data.cycles || [];
@@ -10562,13 +10684,86 @@ const providerSettingsConfig = {
   },
   opencode: {
     title: 'OpenCode Go',
-    desc: 'Configure OpenCode Go quota tracking. Changes take effect after daemon restart.',
-    fields: [
-      { id: 'workspace_id', label: 'Workspace ID', type: 'text', placeholder: 'wrk_...', hint: 'Your OpenCode Go workspace ID. Overrides OPENCODE_GO_WORKSPACE_ID from .env.' },
-      { id: 'auth_cookie', label: 'Auth Cookie', type: 'password', placeholder: 'Not configured', hint: 'The auth cookie value required for scraping the dashboard. Overrides OPENCODE_GO_AUTH_COOKIE from .env.', sensitive: true },
-    ],
+    desc: 'Manage OpenCode Go workspaces. Cookies are encrypted at rest and are never returned by the API.',
+    fields: [],
   },
 };
+
+async function renderOpenCodeAccountSettings(bodyEl, config) {
+  bodyEl.innerHTML = `<div class="opencode-modal-accounts">
+    <p style="color:var(--text-secondary);font-size:13px;margin:0 0 16px">${config.desc}</p>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <h4 style="margin:0;font-size:13px;color:var(--text-secondary)">Accounts</h4>
+      <button id="opencode-add-account-btn" class="provider-settings-action">+ Add Account</button>
+    </div>
+    <div id="opencode-accounts-list">Loading...</div>
+    <div id="opencode-add-form" hidden style="margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--surface-inset)">
+      <div class="settings-fields">
+        <div class="settings-field"><label>Display Name</label><input id="opencode-new-name" class="settings-input" maxlength="80" placeholder="Work" /></div>
+        <div class="settings-field"><label>Workspace ID</label><input id="opencode-new-workspace" class="settings-input" maxlength="256" placeholder="wrk_..." /></div>
+        <div class="settings-field"><label>Auth Cookie</label><input id="opencode-new-cookie" type="password" class="settings-input" autocomplete="new-password" placeholder="Cookie value" /></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:8px"><button id="opencode-save-new" class="provider-settings-action">Save</button><button id="opencode-cancel-new" class="provider-settings-action">Cancel</button></div>
+    </div>
+  </div>`;
+  const addButton = document.getElementById('opencode-add-account-btn');
+  const addForm = document.getElementById('opencode-add-form');
+  addButton?.addEventListener('click', () => { addForm.hidden = false; addButton.hidden = true; });
+  document.getElementById('opencode-cancel-new')?.addEventListener('click', () => { addForm.hidden = true; addButton.hidden = false; });
+  document.getElementById('opencode-save-new')?.addEventListener('click', async () => {
+    const name = document.getElementById('opencode-new-name')?.value.trim();
+    const workspace_id = document.getElementById('opencode-new-workspace')?.value.trim();
+    const auth_cookie = document.getElementById('opencode-new-cookie')?.value.trim();
+    if (!name || !workspace_id || !auth_cookie) { alert('Name, workspace ID, and auth cookie are required.'); return; }
+    const res = await authFetch(`${API_BASE}/api/opencode/accounts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, workspace_id, auth_cookie, enabled: true }) });
+    if (res.ok) { await loadOpenCodeAccounts(); await openProviderSettingsModal('opencode'); }
+    else { const data = await res.json().catch(() => ({})); alert(data.error || 'Failed to add account'); }
+  });
+
+  const list = document.getElementById('opencode-accounts-list');
+  try {
+    const res = await authFetch(`${API_BASE}/api/opencode/accounts`);
+    const data = res.ok ? await res.json() : { accounts: [] };
+    const accounts = Array.isArray(data.accounts) ? data.accounts : [];
+    if (!accounts.length) { list.innerHTML = '<p class="empty-state">No OpenCode accounts configured.</p>'; return; }
+    list.innerHTML = accounts.map(account => `<div class="opencode-account-item" data-account-id="${account.account_id}" style="padding:10px 0;border-bottom:1px solid var(--border-light)">
+      <div class="opencode-account-view" style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+        <div><div style="font-weight:500">${escapeHtml(account.name)}</div><div style="font-size:12px;color:var(--text-secondary)">${escapeHtml(account.workspace_id)} - ${escapeHtml(account.auth_status)} - ${account.has_auth_cookie ? 'Cookie configured' : 'Cookie missing'}</div></div>
+        <div style="display:flex;gap:6px"><button data-action="edit" class="provider-settings-action">Edit</button><button data-action="toggle" class="provider-settings-action">${account.enabled ? 'Disable' : 'Enable'}</button><button data-action="delete" class="provider-settings-action">Delete</button></div>
+      </div>
+      <div class="opencode-account-edit" hidden>
+        <div class="settings-fields"><input data-field="name" class="settings-input" value="${escapeHtml(account.name)}" maxlength="80"><input data-field="workspace" class="settings-input" value="${escapeHtml(account.workspace_id)}" maxlength="256"><input data-field="cookie" type="password" class="settings-input" autocomplete="new-password" placeholder="Leave blank to keep current Cookie"></div>
+        <div style="display:flex;gap:6px;margin-top:8px"><button data-action="save" class="provider-settings-action">Save</button><button data-action="cancel" class="provider-settings-action">Cancel</button></div>
+      </div>
+    </div>`).join('');
+    list.querySelectorAll('.opencode-account-item').forEach((item, index) => {
+      const account = accounts[index];
+      const view = item.querySelector('.opencode-account-view');
+      const edit = item.querySelector('.opencode-account-edit');
+      item.addEventListener('click', async event => {
+        const action = event.target.closest('button')?.dataset.action;
+        if (!action) return;
+        if (action === 'edit') { view.hidden = true; edit.hidden = false; return; }
+        if (action === 'cancel') { edit.hidden = true; view.hidden = false; return; }
+        if (action === 'delete') {
+          if (!confirm(`Delete ${account.name}? Historical quota data will be preserved, but the Cookie will be erased.`)) return;
+          const response = await authFetch(`${API_BASE}/api/opencode/accounts?id=${account.account_id}`, { method: 'DELETE' });
+          if (response.ok) { await loadOpenCodeAccounts(); await openProviderSettingsModal('opencode'); }
+          return;
+        }
+        const payload = { name: account.name, workspace_id: account.workspace_id, auth_cookie: '', enabled: action === 'toggle' ? !account.enabled : account.enabled };
+        if (action === 'save') {
+          payload.name = edit.querySelector('[data-field="name"]').value.trim();
+          payload.workspace_id = edit.querySelector('[data-field="workspace"]').value.trim();
+          payload.auth_cookie = edit.querySelector('[data-field="cookie"]').value.trim();
+        }
+        const response = await authFetch(`${API_BASE}/api/opencode/accounts?id=${account.account_id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        if (response.ok) { await loadOpenCodeAccounts(); await openProviderSettingsModal('opencode'); }
+        else { const error = await response.json().catch(() => ({})); alert(error.error || 'Failed to update account'); }
+      });
+    });
+  } catch (_) { list.innerHTML = '<p class="empty-state">Failed to load OpenCode accounts.</p>'; }
+}
 
 async function openProviderSettingsModal(providerKey) {
   const config = providerSettingsConfig[providerKey];
@@ -10697,6 +10892,8 @@ async function openProviderSettingsModal(providerKey) {
     } catch (e) {
       profilesList.innerHTML = '<p style="color:var(--text-secondary);font-size:13px">Failed to load profiles</p>';
     }
+  } else if (providerKey === 'opencode') {
+    await renderOpenCodeAccountSettings(bodyEl, config);
   } else if (providerKey === 'minimax') {
     // MiniMax: account management UI (fully UI-driven, unlike Codex file-based profiles)
     let accountsHTML = '<div class="minimax-modal-accounts">';
@@ -11927,6 +12124,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     updateMiniMaxAccountTabsVisibility();
   }
   initMiniMaxAccountTabs();
+  loadOpenCodeAccount();
+  if (getCurrentProvider() === 'opencode') {
+    await loadOpenCodeAccounts();
+  }
+  initOpenCodeAccountTabs();
   loadAPIIntegrationsPreferences();
 
   initTheme();

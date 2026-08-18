@@ -1200,7 +1200,7 @@ func (h *Handler) isProviderConfigured(provider string) bool {
 		}
 		return api.DetectKimiCredentials(h.logger) != nil
 	case "opencode":
-		return h.config != nil && strings.TrimSpace(h.config.OpenCodeGoWorkspaceID) != "" && strings.TrimSpace(h.config.OpenCodeGoAuthCookie) != ""
+		return h.config != nil && h.config.HasProvider("opencode")
 	default:
 		return false
 	}
@@ -2320,8 +2320,8 @@ func (h *Handler) currentBoth(w http.ResponseWriter, r *http.Request) {
 	if h.config.HasProvider("kimi") && providerTelemetryEnabled(visibility, "kimi") {
 		response["kimi"] = h.buildKimiCurrent()
 	}
-	if h.config.HasProvider("opencode") && providerTelemetryEnabled(visibility, "opencode") {
-		response["opencode"] = h.buildOpenCodeCurrent()
+	if h.config.HasProvider("opencode") && providerTelemetryEnabled(visibility, "opencode") && h.store != nil {
+		response["opencode"] = h.buildOpenCodeAggregateCurrent()
 	}
 	respondJSON(w, http.StatusOK, response)
 }
@@ -2953,10 +2953,10 @@ func (h *Handler) historyBoth(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				entry := map[string]interface{}{
-					"capturedAt": s.CapturedAt.Format(time.RFC3339),
+					"capturedAt":        s.CapturedAt.Format(time.RFC3339),
 					"available_balance": s.AvailableBalance,
-					"voucher_balance": s.VoucherBalance,
-					"cash_balance": s.CashBalance,
+					"voucher_balance":   s.VoucherBalance,
+					"cash_balance":      s.CashBalance,
 				}
 				msData = append(msData, entry)
 			}
@@ -3090,25 +3090,31 @@ func (h *Handler) historyBoth(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if h.config.HasProvider("opencode") && providerTelemetryEnabled(visibility, "opencode") && h.store != nil {
-		snapshots, err := h.store.QueryOpenCodeRange(start, now, 200)
-		if err == nil {
-			step := downsampleStep(len(snapshots), maxChartPoints)
-			last := len(snapshots) - 1
-			opencodeData := make([]map[string]interface{}, 0, min(len(snapshots), maxChartPoints))
-			for i, snap := range snapshots {
-				if step > 1 && i != 0 && i != last && i%step != 0 {
-					continue
+	// OpenCode history is account-scoped. The all-provider dashboard does not
+	// choose an implicit account, so it receives no OpenCode history unless the
+	// caller explicitly supplies one.
+	if h.config.HasProvider("opencode") && providerTelemetryEnabled(visibility, "opencode") && h.store != nil && strings.TrimSpace(r.URL.Query().Get("account")) != "" {
+		accountID, accountErr := h.openCodeAccountID(r)
+		if accountErr == nil {
+			snapshots, queryErr := h.store.QueryOpenCodeRangeForAccount(accountID, start, now, 200)
+			if queryErr == nil {
+				step := downsampleStep(len(snapshots), maxChartPoints)
+				last := len(snapshots) - 1
+				opencodeData := make([]map[string]interface{}, 0, min(len(snapshots), maxChartPoints))
+				for i, snap := range snapshots {
+					if step > 1 && i != 0 && i != last && i%step != 0 {
+						continue
+					}
+					entry := map[string]interface{}{
+						"capturedAt": snap.CapturedAt.Format(time.RFC3339),
+					}
+					for _, q := range snap.Quotas {
+						entry[q.Name] = q.Utilization
+					}
+					opencodeData = append(opencodeData, entry)
 				}
-				entry := map[string]interface{}{
-					"capturedAt": snap.CapturedAt.Format(time.RFC3339),
-				}
-				for _, q := range snap.Quotas {
-					entry[q.Name] = q.Utilization
-				}
-				opencodeData = append(opencodeData, entry)
+				response["opencode"] = opencodeData
 			}
-			response["opencode"] = opencodeData
 		}
 	}
 
@@ -3883,11 +3889,11 @@ func (h *Handler) cyclesBoth(w http.ResponseWriter, r *http.Request) {
 	if h.config.HasProvider("deepseek") {
 		quotaType := "balance"
 		var dsCycles []map[string]interface{}
-		
-		// Use CNY as default if not specified elsewhere. DeepSeek could use USD, 
+
+		// Use CNY as default if not specified elsewhere. DeepSeek could use USD,
 		// but tracking one primary currency for UI is sufficient for summary.
 		currency := "CNY"
-		
+
 		if active, err := h.store.QueryActiveDeepSeekCycle(quotaType, currency); err == nil && active != nil {
 			dsCycles = append(dsCycles, deepseekCycleToMap(active))
 		}
@@ -4500,6 +4506,13 @@ func (h *Handler) Sessions(w http.ResponseWriter, r *http.Request) {
 		sessions, queryErr = h.queryCodexSessionsByAccount(accountID)
 	} else if provider == "minimax" {
 		sessions, queryErr = h.queryMiniMaxSessions(h.parseMiniMaxAccountID(r))
+	} else if provider == "opencode" {
+		accountID, accountErr := h.openCodeAccountID(r)
+		if accountErr != nil {
+			respondError(w, http.StatusBadRequest, accountErr.Error())
+			return
+		}
+		sessions, queryErr = h.store.QuerySessionHistory(fmt.Sprintf("opencode:%d", accountID))
 	} else {
 		sessions, queryErr = h.store.QuerySessionHistory(provider)
 	}
@@ -5006,8 +5019,12 @@ func (h *Handler) insightsBoth(w http.ResponseWriter, r *http.Request, rangeDur 
 	if h.config.HasProvider("kimi") && providerTelemetryEnabled(visibility, "kimi") {
 		response["kimi"] = h.buildKimiInsights(hidden)
 	}
-	if h.config.HasProvider("opencode") && providerTelemetryEnabled(visibility, "opencode") {
-		response["opencode"] = h.buildOpenCodeInsights(hidden, rangeDur)
+	if h.config.HasProvider("opencode") && providerTelemetryEnabled(visibility, "opencode") && h.store != nil {
+		// Preserve legacy single-account insights, but never choose an arbitrary
+		// account when OpenCode has multiple configured accounts.
+		if accounts, err := h.store.QueryOpenCodeAccounts(false); err == nil && len(accounts) == 1 {
+			response["opencode"] = h.buildOpenCodeInsightsForAccount(accounts[0].AccountID, hidden, rangeDur)
+		}
 	}
 
 	respondJSON(w, http.StatusOK, response)
@@ -6936,6 +6953,16 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusBadRequest, "invalid provider_settings value")
 			return
 		}
+		if openCodeSettings, ok := provSettings["opencode"].(map[string]interface{}); ok {
+			if _, hasCookie := openCodeSettings["auth_cookie"]; hasCookie {
+				respondError(w, http.StatusBadRequest, "use the OpenCode account API for credentials")
+				return
+			}
+			if _, hasWorkspace := openCodeSettings["workspace_id"]; hasWorkspace {
+				respondError(w, http.StatusBadRequest, "use the OpenCode account API for credentials")
+				return
+			}
+		}
 		// Deep-merge with existing settings: preserve fields not in the update
 		// (e.g. sensitive keys omitted from the form when unchanged).
 		existing := make(map[string]interface{})
@@ -7687,7 +7714,7 @@ func (h *Handler) cycleOverviewBoth(w http.ResponseWriter, r *http.Request) {
 			"cycles":     orCycles,
 		}
 	}
-	
+
 	if h.config.HasProvider("moonshot") {
 		quotaType := "balance"
 		var msCycles []map[string]interface{}
