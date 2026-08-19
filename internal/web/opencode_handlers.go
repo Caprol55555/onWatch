@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/onllm-dev/onwatch/v2/internal/api"
+	"github.com/onllm-dev/onwatch/v2/internal/notify"
 	"github.com/onllm-dev/onwatch/v2/internal/store"
 	"github.com/onllm-dev/onwatch/v2/internal/tracker"
 )
@@ -153,6 +154,8 @@ func (h *Handler) OpenCodeAccountsSummary(w http.ResponseWriter, r *http.Request
 		respondError(w, http.StatusInternalServerError, "failed to query summaries")
 		return
 	}
+	now := time.Now()
+	paceCfg := h.openCodePaceConfig()
 	accounts := make([]map[string]any, 0, len(summaries))
 	for _, summary := range summaries {
 		entry := map[string]any{
@@ -169,6 +172,7 @@ func (h *Handler) OpenCodeAccountsSummary(w http.ResponseWriter, r *http.Request
 				item := map[string]any{"name": q.Name, "displayName": opencodeDisplayName(q.Name), "utilization": q.Utilization, "used": q.Used, "limit": q.Limit, "format": q.Format, "status": utilStatus(q.Utilization)}
 				if q.ResetsAt != nil {
 					item["resetsAt"] = q.ResetsAt.Format(time.RFC3339)
+					applyOpenCodePaceMarkers(item, q.Name, *q.ResetsAt, paceCfg, now)
 				}
 				quotas = append(quotas, item)
 			}
@@ -176,13 +180,16 @@ func (h *Handler) OpenCodeAccountsSummary(w http.ResponseWriter, r *http.Request
 		}
 		accounts = append(accounts, entry)
 	}
-	respondJSON(w, http.StatusOK, map[string]any{"accounts": accounts, "aggregate": buildOpenCodeSummaryAggregate(summaries)})
+	respondJSON(w, http.StatusOK, map[string]any{"accounts": accounts, "aggregate": h.buildOpenCodeSummaryAggregate(summaries, paceCfg, now)})
 }
 
-func buildOpenCodeSummaryAggregate(summaries []store.OpenCodeAccountSummary) map[string]any {
+func (h *Handler) buildOpenCodeSummaryAggregate(summaries []store.OpenCodeAccountSummary, paceCfg notify.PaceConfig, now time.Time) map[string]any {
 	type quotaAccumulator struct {
-		total float64
-		count int
+		total         float64
+		count         int
+		warningTotal  float64
+		criticalTotal float64
+		markerCount   int
 	}
 	acc := make(map[string]quotaAccumulator)
 	sampledAccounts := 0
@@ -200,6 +207,14 @@ func buildOpenCodeSummaryAggregate(summaries []store.OpenCodeAccountSummary) map
 			value := acc[quota.Name]
 			value.total += quota.Utilization
 			value.count++
+			if quota.ResetsAt != nil {
+				warning, critical, _, ok := notify.PaceMarkers(quota.Name, *quota.ResetsAt, paceCfg, now)
+				if ok {
+					value.warningTotal += warning
+					value.criticalTotal += critical
+					value.markerCount++
+				}
+			}
 			acc[quota.Name] = value
 		}
 	}
@@ -215,13 +230,52 @@ func buildOpenCodeSummaryAggregate(summaries []store.OpenCodeAccountSummary) map
 			continue
 		}
 		average := value.total / float64(value.count)
-		quotas = append(quotas, map[string]any{
+		item := map[string]any{
 			"name": name, "displayName": opencodeDisplayName(name),
 			"averageUtilization": average, "utilization": average, "sampleCount": value.count,
 			"status": utilStatus(average),
-		})
+		}
+		if value.markerCount > 0 {
+			item["paceWarningMarker"] = value.warningTotal / float64(value.markerCount)
+			item["paceCriticalMarker"] = value.criticalTotal / float64(value.markerCount)
+			item["paceMarkerSampleCount"] = value.markerCount
+		}
+		quotas = append(quotas, item)
 	}
 	return map[string]any{"accountCount": len(summaries), "sampledAccountCount": sampledAccounts, "quotas": quotas}
+}
+
+func defaultOpenCodePaceConfig() notify.PaceConfig {
+	return notify.PaceConfig{Enabled: true, Warning: 10, Critical: 20, WorkdayStart: "09:00", LunchStart: "12:00", LunchMinutes: 60, WorkdayEnd: "18:00", WorkdaysPerWeek: 5}
+}
+
+func (h *Handler) openCodePaceConfig() notify.PaceConfig {
+	cfg := defaultOpenCodePaceConfig()
+	if h.store == nil {
+		return cfg
+	}
+	if raw, err := h.store.GetSetting("notifications"); err == nil && raw != "" {
+		var saved struct {
+			Pace *notify.PaceConfig `json:"pace"`
+		}
+		if json.Unmarshal([]byte(raw), &saved) == nil && saved.Pace != nil {
+			cfg = *saved.Pace
+		}
+	}
+	if timezone, err := h.store.GetSetting("timezone"); err == nil {
+		cfg.Timezone = strings.TrimSpace(timezone)
+	}
+	return cfg
+}
+
+func applyOpenCodePaceMarkers(target map[string]any, quotaName string, resetsAt time.Time, cfg notify.PaceConfig, now time.Time) {
+	warning, critical, progress, ok := notify.PaceMarkers(quotaName, resetsAt, cfg, now)
+	if !ok {
+		return
+	}
+	target["paceWarningMarker"] = warning
+	target["paceCriticalMarker"] = critical
+	target["paceWorkProgress"] = progress
 }
 
 // SetOpenCodeTracker sets the OpenCode tracker for usage summary enrichment.
@@ -463,7 +517,7 @@ func (h *Handler) buildOpenCodeAggregateCurrent() map[string]interface{} {
 	if !latest.IsZero() {
 		response["capturedAt"] = latest.Format(time.RFC3339)
 	}
-	aggregate := buildOpenCodeSummaryAggregate(summaries)
+	aggregate := h.buildOpenCodeSummaryAggregate(summaries, h.openCodePaceConfig(), now)
 	response["sampledAccountCount"] = aggregate["sampledAccountCount"]
 	response["quotas"] = aggregate["quotas"]
 	return response
@@ -471,6 +525,7 @@ func (h *Handler) buildOpenCodeAggregateCurrent() map[string]interface{} {
 
 func (h *Handler) buildOpenCodeCurrentForAccount(accountID int64) map[string]interface{} {
 	now := time.Now().UTC()
+	paceCfg := h.openCodePaceConfig()
 	response := map[string]interface{}{
 		"capturedAt": now.Format(time.RFC3339),
 		"quotas":     []interface{}{},
@@ -508,6 +563,7 @@ func (h *Handler) buildOpenCodeCurrentForAccount(accountID int64) map[string]int
 				quotaMap["resetsAt"] = q.ResetsAt.Format(time.RFC3339)
 				quotaMap["timeUntilReset"] = formatDuration(timeUntilReset)
 				quotaMap["timeUntilResetSeconds"] = int64(timeUntilReset.Seconds())
+				applyOpenCodePaceMarkers(quotaMap, q.Name, *q.ResetsAt, paceCfg, now)
 			}
 			if h.opencodeTracker != nil {
 				if summary, sErr := h.opencodeTracker.UsageSummaryForAccount(accountID, q.Name); sErr == nil && summary != nil {
@@ -550,6 +606,7 @@ func (h *Handler) buildOpenCodeCurrentForAccount(accountID int64) map[string]int
 			qMap["resetsAt"] = q.ResetsAt.Format(time.RFC3339)
 			qMap["timeUntilReset"] = formatDuration(timeUntilReset)
 			qMap["timeUntilResetSeconds"] = int64(timeUntilReset.Seconds())
+			applyOpenCodePaceMarkers(qMap, q.Name, *q.ResetsAt, paceCfg, now)
 		}
 		if h.opencodeTracker != nil {
 			if summary, sErr := h.opencodeTracker.UsageSummaryForAccount(accountID, q.Name); sErr == nil && summary != nil {
@@ -564,6 +621,60 @@ func (h *Handler) buildOpenCodeCurrentForAccount(accountID int64) map[string]int
 	return response
 }
 
+func openCodeHistoryWindow(rangeParam string, now time.Time) (time.Time, time.Duration) {
+	now = now.UTC()
+	switch rangeParam {
+	case "1h":
+		return now.Add(-time.Hour), 5 * time.Minute
+	case "6h":
+		return now.Add(-6 * time.Hour), 5 * time.Minute
+	case "24h", "1d":
+		return now.Add(-24 * time.Hour), 15 * time.Minute
+	case "3d":
+		return now.Add(-3 * 24 * time.Hour), 30 * time.Minute
+	case "30d":
+		return now.Add(-30 * 24 * time.Hour), 4 * time.Hour
+	default:
+		return now.Add(-7 * 24 * time.Hour), time.Hour
+	}
+}
+
+// OpenCodeAccountsHistory returns a bounded, downsampled average trend for the
+// all-accounts dashboard. It never returns per-account history or credentials.
+func (h *Handler) OpenCodeAccountsHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.store == nil {
+		respondJSON(w, http.StatusOK, []any{})
+		return
+	}
+	now := time.Now().UTC()
+	start, bucketSize := openCodeHistoryWindow(r.URL.Query().Get("range"), now)
+	points, err := h.store.QueryOpenCodeAggregateHistory(start, now, bucketSize, 200)
+	if err != nil {
+		h.logger.Error("failed to query aggregate OpenCode history", "error", err)
+		respondError(w, http.StatusInternalServerError, "failed to query aggregate history")
+		return
+	}
+	type historyEntry struct {
+		CapturedAt string           `json:"capturedAt"`
+		Quotas     []map[string]any `json:"quotas"`
+	}
+	entries := make([]historyEntry, 0)
+	for _, point := range points {
+		if len(entries) == 0 || entries[len(entries)-1].CapturedAt != point.CapturedAt.Format(time.RFC3339) {
+			entries = append(entries, historyEntry{CapturedAt: point.CapturedAt.Format(time.RFC3339), Quotas: []map[string]any{}})
+		}
+		entries[len(entries)-1].Quotas = append(entries[len(entries)-1].Quotas, map[string]any{
+			"name": point.QuotaName, "displayName": opencodeDisplayName(point.QuotaName),
+			"utilization": point.AverageUtilization, "sampleCount": point.SampleCount,
+		})
+	}
+	respondJSON(w, http.StatusOK, entries)
+}
+
 func (h *Handler) historyOpenCode(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if h.store == nil {
@@ -571,29 +682,8 @@ func (h *Handler) historyOpenCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rangeParam := r.URL.Query().Get("range")
-	if rangeParam == "" {
-		rangeParam = "7d"
-	}
-
 	now := time.Now().UTC()
-	var start time.Time
-	switch rangeParam {
-	case "1h":
-		start = now.Add(-1 * time.Hour)
-	case "6h":
-		start = now.Add(-6 * time.Hour)
-	case "24h", "1d":
-		start = now.Add(-24 * time.Hour)
-	case "3d":
-		start = now.Add(-3 * 24 * time.Hour)
-	case "30d":
-		start = now.Add(-30 * 24 * time.Hour)
-	case "7d":
-		start = now.Add(-7 * 24 * time.Hour)
-	default:
-		start = now.Add(-7 * 24 * time.Hour)
-	}
+	start, _ := openCodeHistoryWindow(r.URL.Query().Get("range"), now)
 
 	accountID, accountErr := h.openCodeAccountID(r)
 	if accountErr != nil {

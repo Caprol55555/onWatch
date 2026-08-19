@@ -4189,6 +4189,18 @@ const opencodeChartColorFallback = [
   { border: '#ec4899', bg: 'rgba(236, 72, 153, 0.08)' }
 ];
 
+function quotaThresholdMarkersHTML(quota) {
+  const warning = Number(quota?.paceWarningMarker);
+  const critical = Number(quota?.paceCriticalMarker);
+  if (!Number.isFinite(warning) || !Number.isFinite(critical)) return '';
+  const displayPosition = (value) => Math.max(0, Math.min(100, quota.cardPercent != null ? 100 - value : value));
+  const warningPosition = displayPosition(warning);
+  const criticalPosition = displayPosition(critical);
+  return `
+    <span class="quota-threshold-marker quota-threshold-warning" style="left:${warningPosition.toFixed(2)}%" title="${escapeHTML(tr('quota.pace_warning_marker', { percent: warning.toFixed(1) }))}" aria-label="${escapeHTML(tr('quota.pace_warning_marker', { percent: warning.toFixed(1) }))}"></span>
+    <span class="quota-threshold-marker quota-threshold-critical" style="left:${criticalPosition.toFixed(2)}%" title="${escapeHTML(tr('quota.pace_critical_marker', { percent: critical.toFixed(1) }))}" aria-label="${escapeHTML(tr('quota.pace_critical_marker', { percent: critical.toFixed(1) }))}"></span>`;
+}
+
 function renderOpenCodeQuotaCards(quotas, containerId) {
   const container = document.getElementById(containerId);
   if (!container) return;
@@ -4200,7 +4212,7 @@ function renderOpenCodeQuotaCards(quotas, containerId) {
 
   container.innerHTML = sortOpenCodeQuotas(quotas).map((q, i) => {
     const icon = '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>';
-    const displayName = q.displayName || opencodeDisplayNames[q.name] || q.name;
+    const displayName = localizedQuotaLabel(q.name, q.displayName || opencodeDisplayNames[q.name] || q.name);
     const displayPct = q.cardPercent != null ? q.cardPercent : (q.utilization || 0);
     const usagePct = displayPct.toFixed(1);
     const status = q.status || 'healthy';
@@ -4229,6 +4241,7 @@ function renderOpenCodeQuotaCards(quotas, containerId) {
       <div class="progress-wrapper">
         <div class="progress-bar" role="progressbar" aria-valuenow="${Math.round(displayPct)}" aria-valuemin="0" aria-valuemax="100">
           <div class="progress-fill" id="${progressId}" style="width: ${usagePct}%" data-status="${status}"></div>
+          ${quotaThresholdMarkersHTML(q)}
         </div>
       </div>
       <footer class="card-footer">
@@ -4285,7 +4298,11 @@ function updateOpenCodeCard(quota) {
     progressEl.style.width = `${usagePct}%`;
     progressEl.setAttribute('data-status', status);
     const bar = progressEl.parentElement;
-    if (bar) bar.setAttribute('aria-valuenow', Math.round(displayPct));
+    if (bar) {
+      bar.setAttribute('aria-valuenow', Math.round(displayPct));
+      bar.querySelectorAll('.quota-threshold-marker').forEach(marker => marker.remove());
+      bar.insertAdjacentHTML('beforeend', quotaThresholdMarkersHTML(quota));
+    }
   }
   if (percentEl) {
     const oldVal = prev ? prev.percent : 0;
@@ -4646,6 +4663,8 @@ function accountOverviewQuotas(provider, account) {
       percent: typeof q.utilization === 'number' ? q.utilization : 0,
       status: q.status || 'healthy',
       resetAt: q.resetsAt || null,
+      paceWarningMarker: q.paceWarningMarker,
+      paceCriticalMarker: q.paceCriticalMarker,
     }));
   }
   const visible = filterCodexQuotasForPlan(account.quotas || [], account.planType);
@@ -4691,6 +4710,7 @@ function accountOverviewCardHTML(provider, account, idx) {
           </div>
           <div class="progress-bar" role="progressbar" aria-valuenow="${Math.round(r.percent)}" aria-valuemin="0" aria-valuemax="100">
             <div class="progress-fill" style="width: ${pct}%" data-status="${r.status}"></div>
+            ${quotaThresholdMarkersHTML(r)}
           </div>
           ${reset ? `<div class="aoq-reset" data-reset-at="${r.resetAt}">${reset}</div>` : ''}
         </div>`;
@@ -4718,6 +4738,7 @@ function openCodeAggregateCardHTML(aggregate) {
       <div class="aoq-top"><span class="aoq-label">${escapeHTML(label)}</span><span class="aoq-pct">${pct.toFixed(1)}%</span></div>
       <div class="progress-bar" role="progressbar" aria-valuenow="${Math.round(pct)}" aria-valuemin="0" aria-valuemax="100">
         <div class="progress-fill" style="width:${pct.toFixed(1)}%" data-status="${q.status || getQuotaStatus(pct)}"></div>
+        ${quotaThresholdMarkersHTML(q)}
       </div>
       <div class="aoq-reset">${tr('opencode.aggregate_samples', { count: q.sampleCount || 0 })}</div>
     </div>`;
@@ -4850,6 +4871,56 @@ function buildOverviewWindows(provider, accounts) {
 
 // Dash patterns to distinguish quota windows of the same account on one chart.
 const overviewWindowDashes = [[], [6, 4], [2, 3], [8, 3, 2, 3]];
+
+// Render a bounded, server-downsampled average across enabled OpenCode
+// accounts. The browser receives at most 200 buckets instead of downloading
+// every account's raw history.
+async function renderOpenCodeAggregateChart(range, requestSeq) {
+  try {
+    const res = await authFetch(`${API_BASE}/api/opencode/accounts/history?range=${encodeURIComponent(range)}`);
+    if (!res.ok) throw new Error('Failed to fetch aggregate OpenCode history');
+    const rows = await res.json();
+    if (State.historyRequestSeq !== requestSeq || !isAccountsOverviewMode('opencode')) return;
+
+    if (!State.chart) initChart();
+    if (!State.chart) return;
+
+    const datasets = opencodeQuotaOrder.map((name) => {
+      const rawData = (Array.isArray(rows) ? rows : []).map((entry) => {
+        const quota = Array.isArray(entry.quotas) ? entry.quotas.find(item => item.name === name) : null;
+        return quota ? { x: new Date(entry.capturedAt), y: Number(quota.utilization) } : null;
+      }).filter(Boolean);
+      if (rawData.length === 0) return null;
+      const color = opencodeChartColorMap[name] || opencodeChartColorFallback[0];
+      const processed = processDataWithGaps(rawData, range);
+      return {
+        label: tr('opencode.aggregate_trend_label', { quota: localizedQuotaLabel(name, opencodeDisplayNames[name] || name) }),
+        data: processed.data,
+        borderColor: color.border,
+        backgroundColor: color.bg,
+        fill: false,
+        tension: 0.35,
+        borderWidth: 2,
+        pointRadius: processed.pointRadii,
+        pointHoverRadius: 4,
+        spanGaps: true,
+        segment: getSegmentStyle(processed.gapSegments, color.border),
+      };
+    }).filter(Boolean);
+
+    State.chart.data.datasets = datasets;
+    updateTimeScale(State.chart, range);
+    State.chart.options.scales.y.min = 0;
+    State.chart.options.scales.y.max = 100;
+    State.chart.update();
+  } catch (_) {
+    if (State.historyRequestSeq !== requestSeq) return;
+    if (State.chart) {
+      State.chart.data.datasets = [];
+      State.chart.update();
+    }
+  }
+}
 
 // Draw a single chart with one line per (account × quota window), Anthropic-style
 // - every account's 5-Hour and Weekly limits are shown together, no toggle.
@@ -5066,11 +5137,44 @@ function localizedInsightText(text) {
   const value = String(text || '');
   const key = INSIGHT_TEXT_KEYS[value];
   if (key) return tr(key);
+  if (value === 'Idle') return tr('common.idle');
+  if (value === 'Analyzing...') return tr('insights.analyzing');
+  const hourlyRate = value.match(/^([\d.]+)%\/hr$/i);
+  if (hourlyRate) return tr('insights.per_hour_metric', { rate: hourlyRate[1] });
+  const burnTitle = value.match(/^(5-Hour|Weekly|Monthly) Burn Rate$/i);
+  if (burnTitle) {
+    const quotaKey = { '5-hour': 'five_hour', weekly: 'weekly', monthly: 'monthly' }[burnTitle[1].toLowerCase()];
+    return tr('insights.burn_rate_title', { quota: localizedQuotaLabel(quotaKey, burnTitle[1]) });
+  }
+  const projection = value.match(/^~([\d.]+)% by reset(?: in (.+))?$/i);
+  if (projection) {
+    const remaining = projection[2]
+      ? tr('insights.remaining_until_reset', { duration: localizedInsightDuration(projection[2]) })
+      : '';
+    return tr('insights.projected_by_reset', { percent: projection[1], remaining });
+  }
+  let match = value.match(/^Currently at ([\d.]+)%. Collecting more snapshots to estimate burn rate and refine reset projection\.$/i);
+  if (match) return tr('insights.collecting_rate_desc', { current: match[1] });
+  match = value.match(/^Currently at ([\d.]+)%. No meaningful burn detected recently, so this quota looks stable through the rest of the cycle\.$/i);
+  if (match) return tr('insights.stable_cycle_desc', { current: match[1] });
+  match = value.match(/^Currently at ([\d.]+)%. At this rate, projected ([\d.]+)% by reset\.$/i);
+  if (match) return tr('insights.projected_rate_desc', { current: match[1], projected: match[2] });
+  match = value.match(/^Currently at ([\d.]+)%. At this rate, projected ([\d.]+)% by reset and likely to exhaust in (.+) before reset\.$/i);
+  if (match) return tr('insights.exhaustion_rate_desc', { current: match[1], projected: match[2], duration: localizedInsightDuration(match[3]) });
   if (/^Keep onWatch running to collect enough .* history/i.test(value)) return tr('insights.collect_history_desc');
   if (/^Keep onWatch running (?:to collect|to build up)/i.test(value)) return tr('insights.getting_started_desc');
   if (/API is currently reporting that the service is not available/i.test(value)) return tr('insights.service_unavailable_desc');
   if (value.startsWith('High Utilization: ')) return `${tr('status.warning')}: ${value.slice('High Utilization: '.length)}`;
   return value;
+}
+
+function localizedInsightDuration(value) {
+  if (!String(getActiveLocale()).toLowerCase().startsWith('zh')) return String(value || '');
+  return String(value || '')
+    .replace(/(\d+)d\b/g, '$1 天')
+    .replace(/(\d+)h\b/g, '$1 小时')
+    .replace(/(\d+)m\b/g, '$1 分钟')
+    .replace(/(\d+)s\b/g, '$1 秒');
 }
 
 // ── Deep Insights (Interactive Cards) ──
@@ -5174,7 +5278,7 @@ async function fetchDeepInsights() {
           (s.metric || s.severity || s.desc)
             ? buildEnrichedStatHTML(s)
             : `<div class="insight-stat">
-                <div class="insight-stat-value">${escapeHTML(s.value)}</div>
+                <div class="insight-stat-value">${escapeHTML(localizedInsightText(s.value))}</div>
                 <div class="insight-stat-label">${escapeHTML(localizedInsightText(s.label))}</div>
                 ${s.sublabel ? `<div class="insight-stat-sublabel">${escapeHTML(localizedInsightText(s.sublabel))}</div>` : ''}
               </div>`
@@ -5470,7 +5574,7 @@ function buildEnrichedStatHTML(s) {
       <svg class="insight-card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${icon}</svg>
       <span class="insight-card-title">${escapeHTML(localizedInsightText(s.label))}</span>
       <span class="insight-card-values">
-        <span class="insight-card-metric">${escapeHTML(displayMetric)}</span>
+        <span class="insight-card-metric">${escapeHTML(localizedInsightText(displayMetric))}</span>
         ${s.sublabel ? `<span class="insight-card-sublabel">${escapeHTML(localizedInsightText(s.sublabel))}</span>` : ''}
       </span>
       ${hideBtn}
@@ -5491,7 +5595,7 @@ function buildInsightCardsHTML(insights) {
       <div class="insight-card-header">
         <svg class="insight-card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${icon}</svg>
         <span class="insight-card-title">${escapeHTML(localizedInsightText(i.title))}</span>
-        ${i.metric || i.sublabel ? `<span class="insight-card-values">${i.metric ? `<span class="insight-card-metric">${escapeHTML(i.metric)}</span>` : ''}${i.sublabel ? `<span class="insight-card-sublabel">${escapeHTML(localizedInsightText(i.sublabel))}</span>` : ''}</span>` : ''}
+        ${i.metric || i.sublabel ? `<span class="insight-card-values">${i.metric ? `<span class="insight-card-metric">${escapeHTML(localizedInsightText(i.metric))}</span>` : ''}${i.sublabel ? `<span class="insight-card-sublabel">${escapeHTML(localizedInsightText(i.sublabel))}</span>` : ''}</span>` : ''}
         ${hideBtn}
         <svg class="insight-card-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
       </div>
@@ -5836,7 +5940,7 @@ async function fetchHistory(range) {
 
   if (isAccountsOverviewMode(requestProvider)) {
     if (requestProvider === 'opencode') {
-      if (State.chart) { State.chart.destroy(); State.chart = null; }
+      await renderOpenCodeAggregateChart(range, requestSeq);
       return;
     }
     await renderMultiAccountChart(requestProvider, range, requestSeq);
@@ -6851,7 +6955,7 @@ function renderProviderInsightsHTML(provider, payload) {
     items.push(`<article class="insight-card provider-mini-insight severity-${severity}">
       <div class="insight-card-header">
         <span class="insight-card-title">${escapeHTML(localizedInsightText(stat.label || tr('api_integrations.metric')))}</span>
-        <span class="insight-card-values"><span class="insight-card-metric">${escapeHTML(displayValue)}</span></span>
+        <span class="insight-card-values"><span class="insight-card-metric">${escapeHTML(localizedInsightText(displayValue))}</span></span>
       </div>
       ${stat.sublabel ? `<div class="provider-mini-insight-note">${escapeHTML(compactInsightText(stat.sublabel, 48))}</div>` : ''}
     </article>`);
@@ -6912,8 +7016,20 @@ function renderAPIIntegrationsCards() {
   if (!container) return;
 
   const entries = getAPIIntegrationEntries();
+  const hasData = entries.length > 0;
+  const insightPanels = document.querySelector('.api-integrations-insights-panels');
+  const chartSection = document.getElementById('usage-chart')?.closest('.chart-section');
+  if (insightPanels) insightPanels.hidden = !hasData;
+  if (chartSection) chartSection.hidden = !hasData;
   if (entries.length === 0) {
-    container.innerHTML = `<p class="insight-text">${tr('api_integrations.no_usage')}</p>`;
+    container.innerHTML = `<section class="api-integrations-empty-state" role="status">
+      <svg class="api-integrations-empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 17V7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v10"/><path d="M8 21h8M12 17v4M8 9h8M8 13h5"/></svg>
+      <div class="api-integrations-empty-copy">
+        <h2>${escapeHTML(tr('api_integrations.no_events_title'))}</h2>
+        <p>${escapeHTML(tr('api_integrations.provider_accounts_separate'))}</p>
+      </div>
+      <a class="btn btn-secondary api-integrations-empty-action" href="#api-integrations-setup-section">${escapeHTML(tr('api_integrations.view_setup'))}</a>
+    </section>`;
     return;
   }
 
@@ -7062,10 +7178,10 @@ function renderAPIIntegrationsChart(range = State.currentRange || '6h') {
   State.chartYMax = computeYMax(State.chart.data.datasets, State.chart, { cap: false });
   State.chart.options.scales.y.max = State.chartYMax;
   const yAxisTitles = {
-    tokenPerCall: 'Tokens per Call',
-    requestCount: 'API Calls',
-    accumulatedTokens: 'Accumulated Tokens',
-    totalCostUsd: 'Cost (USD)',
+    tokenPerCall: tr('api_integrations.tokens_per_call'),
+    requestCount: tr('api_integrations.api_calls'),
+    accumulatedTokens: tr('api_integrations.accumulated_tokens'),
+    totalCostUsd: tr('api_integrations.cost_available'),
   };
   const chartConfig = State.chart.config.options || {};
   const configScales = chartConfig.scales || {};
@@ -7087,7 +7203,7 @@ function renderAPIIntegrationsChart(range = State.currentRange || '6h') {
       return `${ctx.dataset.label}: ${formatCurrencyUSD(Number(ctx.parsed.y || 0))}`;
     }
     if (metric === 'tokenPerCall') {
-      return `${ctx.dataset.label}: ${formatNumber(Number(ctx.parsed.y || 0).toFixed(1))} tokens/call`;
+      return `${ctx.dataset.label}: ${formatNumber(Number(ctx.parsed.y || 0).toFixed(1))} ${tr('api_integrations.tokens_per_call')}`;
     }
     return `${ctx.dataset.label}: ${formatNumber(Number(ctx.parsed.y || 0))}`;
   };
@@ -7100,7 +7216,7 @@ function renderAPIIntegrationsChart(range = State.currentRange || '6h') {
       title: {
         ...currentYTitle,
         display: true,
-        text: yAxisTitles[metric] || 'Value',
+        text: yAxisTitles[metric] || tr('api_integrations.metric'),
       },
       ticks: {
         ...currentYTicks,

@@ -226,6 +226,75 @@ func TestOpenCodeAccountsSummaryIncludesAverageAggregateWithoutTreatingMissingAs
 	}
 }
 
+func TestOpenCodeCurrentAndAggregateExposePaceMarkers(t *testing.T) {
+	t.Setenv("ONWATCH_CREDENTIAL_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.SetSetting("notifications", `{"pace":{"enabled":true,"warning_threshold":10,"critical_threshold":20,"workday_start":"09:00","workday_end":"18:00","lunch_start":"12:00","lunch_minutes":60,"workdays_per_week":5}}`); err != nil {
+		t.Fatal(err)
+	}
+	account, _ := s.CreateOpenCodeAccount("Pace", "pace-markers", "cookie", true)
+	reset := time.Now().UTC().Add(7 * 24 * time.Hour)
+	if _, err := s.InsertOpenCodeSnapshotForAccount(account.AccountID, &api.OpenCodeSnapshot{
+		CapturedAt: time.Now().UTC(),
+		Quotas:     []api.OpenCodeQuota{{Name: "weekly", Utilization: 25, ResetsAt: &reset, Format: api.OpenCodeQuotaFormatPercent}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(s, nil, nil, nil, nil)
+
+	current := h.buildOpenCodeCurrentForAccount(account.AccountID)
+	quotas := current["quotas"].([]interface{})
+	weekly := quotas[0].(map[string]interface{})
+	if weekly["paceWarningMarker"] == nil || weekly["paceCriticalMarker"] == nil {
+		t.Fatalf("single-account quota missing pace markers: %+v", weekly)
+	}
+
+	rr := httptest.NewRecorder()
+	h.OpenCodeAccountsSummary(rr, httptest.NewRequest(http.MethodGet, "/api/opencode/accounts/summary", nil))
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"paceWarningMarker"`) || !strings.Contains(rr.Body.String(), `"paceCriticalMarker"`) {
+		t.Fatalf("aggregate summary missing pace markers: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestOpenCodeAccountsHistoryReturnsBoundedAverageSeries(t *testing.T) {
+	t.Setenv("ONWATCH_CREDENTIAL_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	a, _ := s.CreateOpenCodeAccount("A", "history-endpoint-a", "cookie-a", true)
+	b, _ := s.CreateOpenCodeAccount("B", "history-endpoint-b", "cookie-b", true)
+	capturedAt := time.Now().UTC().Add(-10 * time.Minute)
+	for _, sample := range []struct {
+		id   int64
+		util float64
+	}{{a.AccountID, 20}, {b.AccountID, 60}} {
+		if _, err := s.InsertOpenCodeSnapshotForAccount(sample.id, &api.OpenCodeSnapshot{CapturedAt: capturedAt, Quotas: []api.OpenCodeQuota{{Name: "weekly", Utilization: sample.util}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := NewHandler(s, nil, nil, nil, nil)
+	rr := httptest.NewRecorder()
+	h.OpenCodeAccountsHistory(rr, httptest.NewRequest(http.MethodGet, "/api/opencode/accounts/history?range=1h", nil))
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"utilization":40`) || !strings.Contains(rr.Body.String(), `"sampleCount":2`) {
+		t.Fatalf("aggregate history response=%d %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestOpenCodeAccountsHistoryRejectsNonGETMethods(t *testing.T) {
+	h := NewHandler(nil, nil, nil, nil, nil)
+	rr := httptest.NewRecorder()
+	h.OpenCodeAccountsHistory(rr, httptest.NewRequest(http.MethodPost, "/api/opencode/accounts/history", nil))
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status=%d, want %d", rr.Code, http.StatusMethodNotAllowed)
+	}
+}
+
 func TestAllProvidersHistoryIncludesOpenCodeOnlyForExplicitAccount(t *testing.T) {
 	t.Setenv("ONWATCH_CREDENTIAL_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
 	s, err := store.New(":memory:")

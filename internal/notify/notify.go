@@ -1,15 +1,36 @@
 package notify
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/onllm-dev/onwatch/v2/internal/store"
 )
+
+var pushURLInError = regexp.MustCompile(`https?://[^\s"]+`)
+
+func pushEndpointLogLabel(endpoint string) string {
+	sum := sha256.Sum256([]byte(endpoint))
+	host := "unknown"
+	if parsed, err := url.Parse(endpoint); err == nil && parsed.Hostname() != "" {
+		host = parsed.Hostname()
+	}
+	return fmt.Sprintf("%s#%x", host, sum[:4])
+}
+
+func pushErrorLogText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return pushURLInError.ReplaceAllString(err.Error(), "<redacted-url>")
+}
 
 // NotificationEngine evaluates quota statuses and sends alerts via email and push.
 type NotificationEngine struct {
@@ -472,7 +493,7 @@ func (e *NotificationEngine) SendTestPush() error {
 		ps.Keys.Auth = sub.Auth
 		if err := sender.Send(ps, "[onWatch] Test Push", "Push notifications are working correctly."); err != nil {
 			lastErr = err
-			e.logger.Error("test push failed", "endpoint", sub.Endpoint, "error", err)
+			e.logger.Error("test push failed", "endpoint", pushEndpointLogLabel(sub.Endpoint), "error", pushErrorLogText(err))
 		} else {
 			sent++
 		}
@@ -638,8 +659,8 @@ func (e *NotificationEngine) sendNotification(mailer *SMTPMailer, pushSender *Pu
 				ps.Keys.P256dh = sub.P256dh
 				ps.Keys.Auth = sub.Auth
 				if err := pushSender.Send(ps, subject, body); err != nil {
-					e.logger.Error("failed to send push notification", "error", err,
-						"endpoint", sub.Endpoint)
+					e.logger.Error("failed to send push notification", "error", pushErrorLogText(err),
+						"endpoint", pushEndpointLogLabel(sub.Endpoint))
 					// If subscription is gone (410), remove it
 					if strings.Contains(err.Error(), "410") {
 						e.store.DeletePushSubscription(sub.Endpoint)
@@ -778,7 +799,7 @@ func (e *NotificationEngine) SendAuthErrorNotification(alert AuthErrorAlert) boo
 				ps.Keys.P256dh = sub.P256dh
 				ps.Keys.Auth = sub.Auth
 				if err := pushSender.Send(ps, subject, alert.Message); err != nil {
-					e.logger.Error("failed to send auth error push", "error", err, "endpoint", sub.Endpoint)
+					e.logger.Error("failed to send auth error push", "error", pushErrorLogText(err), "endpoint", pushEndpointLogLabel(sub.Endpoint))
 					if strings.Contains(err.Error(), "410") {
 						e.store.DeletePushSubscription(sub.Endpoint)
 					}

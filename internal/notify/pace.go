@@ -85,6 +85,21 @@ func quotaAlertMetric(status QuotaStatus, cfg PaceConfig, now time.Time) (metric
 	return status.Utilization - workProgress, workProgress, true
 }
 
+// PaceMarkers returns the warning and critical utilization positions used by
+// weekly and monthly pace alerts. The values are suitable for rendering on a
+// 0-100% quota bar and deliberately share the notification engine's schedule
+// calculation so the dashboard cannot drift from alert behavior.
+func PaceMarkers(quotaKey string, resetsAt time.Time, cfg PaceConfig, now time.Time) (warning, critical, workProgress float64, evaluated bool) {
+	_, workProgress, evaluated = quotaAlertMetric(QuotaStatus{QuotaKey: quotaKey, ResetsAt: &resetsAt}, cfg, now)
+	if !evaluated {
+		return 0, 0, 0, false
+	}
+	cfg = normalizePaceConfig(cfg)
+	warning = min(100, workProgress+cfg.Warning)
+	critical = min(100, workProgress+cfg.Critical)
+	return warning, critical, workProgress, true
+}
+
 func parseClock(value string) (hour, minute int, ok bool) {
 	parsed, err := time.Parse("15:04", value)
 	if err != nil {

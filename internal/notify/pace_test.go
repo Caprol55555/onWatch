@@ -116,3 +116,30 @@ func TestNotificationEngineCheckAppliesPaceOnlyToLongPeriodQuotas(t *testing.T) 
 		t.Fatalf("weekly pace alert sent %d notifications, want 1", got)
 	}
 }
+
+func TestPaceMarkersExposeUsageThresholdsForWeeklyAndMonthlyQuotas(t *testing.T) {
+	cfg := PaceConfig{
+		Enabled: true, Warning: 10, Critical: 20,
+		WorkdayStart: "09:00", WorkdayEnd: "18:00",
+		LunchStart: "12:00", LunchMinutes: 60, WorkdaysPerWeek: 5,
+	}
+	loc := time.FixedZone("UTC+8", 8*60*60)
+	now := time.Date(2026, 8, 19, 13, 0, 0, 0, loc)
+	reset := time.Date(2026, 8, 24, 9, 0, 0, 0, loc)
+
+	warning, critical, progress, ok := PaceMarkers("weekly", reset, cfg, now)
+	if !ok {
+		t.Fatal("weekly pace markers should be available")
+	}
+	if warning <= progress || critical <= warning || critical > 100 {
+		t.Fatalf("unexpected markers: progress=%v warning=%v critical=%v", progress, warning, critical)
+	}
+
+	if _, _, _, ok := PaceMarkers("five_hour", reset, cfg, now); ok {
+		t.Fatal("five-hour quota must continue using global thresholds")
+	}
+	cfg.Enabled = false
+	if _, _, _, ok := PaceMarkers("monthly", reset, cfg, now); ok {
+		t.Fatal("disabled pace alerts must not expose pace markers")
+	}
+}

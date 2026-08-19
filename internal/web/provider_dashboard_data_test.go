@@ -146,7 +146,8 @@ func TestOpenCodeAllAccountsUsesOpenCodeHistoryAndKeepsBoundedCombinedTables(t *
 	appJS := readStaticAppJS(t)
 	for _, expected := range []string{
 		"provider === 'opencode' ? `${API_BASE}/api/opencode/accounts/summary`",
-		"Array.isArray(entry.quotas) ? entry.quotas.find(q => q.name === key)",
+		"/api/opencode/accounts/history?range=",
+		"renderOpenCodeAggregateChart",
 		"provider === 'opencode' ? 500",
 		"provider === 'opencode');",
 		"openCodeAggregateCardHTML",
@@ -155,6 +156,38 @@ func TestOpenCodeAllAccountsUsesOpenCodeHistoryAndKeepsBoundedCombinedTables(t *
 	} {
 		if !strings.Contains(appJS, expected) {
 			t.Fatalf("app.js missing OpenCode all-accounts behavior %q", expected)
+		}
+	}
+	if strings.Contains(appJS, "if (requestProvider === 'opencode') {\n      if (State.chart)") {
+		t.Fatal("OpenCode all-accounts history must not be discarded before rendering")
+	}
+}
+
+func TestOpenCodeDashboardShowsPaceMarkersAndLocalizesDynamicInsights(t *testing.T) {
+	appJS := readStaticAppJS(t)
+	for _, marker := range []string{
+		"quotaThresholdMarkersHTML",
+		"paceWarningMarker",
+		"paceCriticalMarker",
+		"insights.burn_rate_title",
+		"insights.stable_cycle_desc",
+		"localizedInsightText(displayMetric)",
+		"localizedQuotaLabel(q.name, q.displayName || opencodeDisplayNames[q.name] || q.name)",
+	} {
+		if !strings.Contains(appJS, marker) {
+			t.Fatalf("app.js missing OpenCode dashboard behavior %q", marker)
+		}
+	}
+	i18n := readEmbeddedFile(t, "static/i18n.js")
+	for _, key := range []string{"insights.burn_rate_title", "insights.stable_cycle_desc", "insights.per_hour_metric", "quota.pace_warning_marker", "api_integrations.provider_accounts_separate"} {
+		if strings.Count(i18n, "'"+key+"':") != 2 {
+			t.Fatalf("translation key %q must exist in English and Simplified Chinese", key)
+		}
+	}
+	css := readEmbeddedFile(t, "static/style.css")
+	for _, marker := range []string{".quota-threshold-marker", ".api-integrations-empty-state", ".api-integrations-insights-panels[hidden]", "justify-content: center"} {
+		if !strings.Contains(css, marker) {
+			t.Fatalf("style.css missing %q", marker)
 		}
 	}
 }

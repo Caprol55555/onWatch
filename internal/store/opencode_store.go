@@ -354,6 +354,67 @@ func (s *Store) QueryOpenCodeUtilizationSeriesForAccount(accountID int64, quotaN
 	return out, rows.Err()
 }
 
+// OpenCodeAggregateHistoryPoint is one quota's average utilization in a
+// bounded time bucket. Each account contributes at most its latest sample in
+// the bucket, preventing faster pollers from receiving extra weight.
+type OpenCodeAggregateHistoryPoint struct {
+	CapturedAt         time.Time
+	QuotaName          string
+	AverageUtilization float64
+	SampleCount        int
+}
+
+// QueryOpenCodeAggregateHistory returns a downsampled all-account trend. It
+// excludes disabled and soft-deleted accounts and bounds the number of time
+// buckets independently of the number of configured accounts.
+func (s *Store) QueryOpenCodeAggregateHistory(start, end time.Time, bucketSize time.Duration, limit int) ([]OpenCodeAggregateHistoryPoint, error) {
+	if bucketSize < time.Minute {
+		bucketSize = time.Minute
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	bucketSeconds := int64(bucketSize / time.Second)
+	rows, err := s.db.Query(`
+		WITH raw AS (
+			SELECT q.account_id, q.quota_name, q.utilization, s.captured_at, s.id AS snapshot_id,
+			       CAST(strftime('%s', s.captured_at) AS INTEGER) / ? AS bucket
+			FROM opencode_quota_values q
+			JOIN opencode_snapshots s ON s.id=q.snapshot_id AND s.account_id=q.account_id
+			JOIN opencode_accounts oa ON oa.account_id=q.account_id
+			JOIN provider_accounts pa ON pa.id=q.account_id
+			WHERE s.captured_at BETWEEN ? AND ? AND oa.enabled=1 AND pa.deleted_at IS NULL
+		), ranked AS (
+			SELECT account_id, quota_name, utilization, captured_at, bucket,
+			       ROW_NUMBER() OVER (PARTITION BY account_id, quota_name, bucket ORDER BY captured_at DESC, snapshot_id DESC) AS sample_rank
+			FROM raw
+		), recent_buckets AS (
+			SELECT DISTINCT bucket FROM ranked WHERE sample_rank=1 ORDER BY bucket DESC LIMIT ?
+		)
+		SELECT r.bucket, r.quota_name, AVG(r.utilization), COUNT(*)
+		FROM ranked r JOIN recent_buckets b ON b.bucket=r.bucket
+		WHERE r.sample_rank=1
+		GROUP BY r.bucket, r.quota_name
+		ORDER BY r.bucket ASC, r.quota_name ASC`,
+		bucketSeconds, start.UTC().Format(time.RFC3339Nano), end.UTC().Format(time.RFC3339Nano), limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query aggregate opencode history: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]OpenCodeAggregateHistoryPoint, 0)
+	for rows.Next() {
+		var bucket int64
+		var point OpenCodeAggregateHistoryPoint
+		if err := rows.Scan(&bucket, &point.QuotaName, &point.AverageUtilization, &point.SampleCount); err != nil {
+			return nil, err
+		}
+		point.CapturedAt = time.Unix(bucket*bucketSeconds, 0).UTC()
+		out = append(out, point)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) QueryOpenCodeLatestPerQuota() ([]OpenCodeLatestQuota, error) {
 	id, err := s.defaultOpenCodeAccountID()
 	if err != nil {
