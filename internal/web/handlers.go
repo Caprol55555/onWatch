@@ -88,41 +88,42 @@ type MiniMaxAccountReloader interface {
 
 // Handler handles HTTP requests for the web dashboard
 type Handler struct {
-	store                  *store.Store
-	tracker                *tracker.Tracker
-	zaiTracker             *tracker.ZaiTracker
-	anthropicTracker       *tracker.AnthropicTracker
-	copilotTracker         *tracker.CopilotTracker
-	codexTracker           *tracker.CodexTracker
-	antigravityTracker     *tracker.AntigravityTracker
-	minimaxTracker         *tracker.MiniMaxTracker
-	geminiTracker          *tracker.GeminiTracker
-	openrouterTracker      *tracker.OpenRouterTracker
-	moonshotTracker        *tracker.MoonshotTracker
-	deepseekTracker        *tracker.DeepSeekTracker
-	cursorTracker          *tracker.CursorTracker
-	grokTracker            *tracker.GrokTracker
-	kimiTracker            *tracker.KimiTracker
-	opencodeTracker        *tracker.OpenCodeTracker
-	updater                *update.Updater
-	notifier               Notifier
-	agentManager           ProviderAgentController
-	minimaxAgentMgr        MiniMaxAccountReloader
-	logger                 *slog.Logger
-	dashboardTmpl          *template.Template
-	loginTmpl              *template.Template
-	settingsTmpl           *template.Template
-	sessions               *SessionStore
-	config                 *config.Config
-	metrics                *metrics.Metrics
-	version                string
-	smtpTestMu             sync.Mutex
-	smtpTestLastSent       time.Time
-	pushTestMu             sync.Mutex
-	pushTestLastSent       time.Time
-	openCodeConnectionTest func(context.Context, string, string) error
-	miniMaxConnectionTest  func(context.Context, string, string) error
-	rateLimiter            *LoginRateLimiter // Per-IP rate limiting for login attempts
+	store                            *store.Store
+	tracker                          *tracker.Tracker
+	zaiTracker                       *tracker.ZaiTracker
+	anthropicTracker                 *tracker.AnthropicTracker
+	copilotTracker                   *tracker.CopilotTracker
+	codexTracker                     *tracker.CodexTracker
+	antigravityTracker               *tracker.AntigravityTracker
+	minimaxTracker                   *tracker.MiniMaxTracker
+	geminiTracker                    *tracker.GeminiTracker
+	openrouterTracker                *tracker.OpenRouterTracker
+	moonshotTracker                  *tracker.MoonshotTracker
+	deepseekTracker                  *tracker.DeepSeekTracker
+	cursorTracker                    *tracker.CursorTracker
+	grokTracker                      *tracker.GrokTracker
+	kimiTracker                      *tracker.KimiTracker
+	opencodeTracker                  *tracker.OpenCodeTracker
+	updater                          *update.Updater
+	notifier                         Notifier
+	agentManager                     ProviderAgentController
+	minimaxAgentMgr                  MiniMaxAccountReloader
+	logger                           *slog.Logger
+	dashboardTmpl                    *template.Template
+	loginTmpl                        *template.Template
+	settingsTmpl                     *template.Template
+	sessions                         *SessionStore
+	config                           *config.Config
+	metrics                          *metrics.Metrics
+	version                          string
+	smtpTestMu                       sync.Mutex
+	smtpTestLastSent                 time.Time
+	pushTestMu                       sync.Mutex
+	pushTestLastSent                 time.Time
+	openCodeConnectionTest           func(context.Context, string, string) error
+	miniMaxConnectionTest            func(context.Context, string, string) error
+	providerCredentialConnectionTest func(context.Context, string, map[string]string) error
+	rateLimiter                      *LoginRateLimiter // Per-IP rate limiting for login attempts
 }
 
 // DefaultCodexAccountID is the default account ID for single-account setups.

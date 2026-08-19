@@ -320,7 +320,7 @@ func (m *OpenCodeAgentManager) pollAccount(parent context.Context, account store
 	}
 	if m.notifier != nil {
 		for _, q := range snapshot.Quotas {
-			m.notifier.Check(notify.QuotaStatus{Provider: "opencode", QuotaKey: fmt.Sprintf("%d:%s", account.AccountID, q.Name), Utilization: q.Utilization, Limit: q.Limit})
+			m.notifier.Check(openCodeNotificationStatus(account.AccountID, q))
 		}
 	}
 	m.sessionsMu.Lock()
@@ -336,6 +336,16 @@ func (m *OpenCodeAgentManager) pollAccount(parent context.Context, account store
 	}
 	sm.ReportPoll(values)
 	m.logger.Info("OpenCode poll complete", "account_id", account.AccountID, "plan_name", snapshot.PlanName, "quota_count", len(snapshot.Quotas))
+}
+
+func openCodeNotificationStatus(accountID int64, quota api.OpenCodeQuota) notify.QuotaStatus {
+	return notify.QuotaStatus{
+		Provider:    "opencode",
+		QuotaKey:    quota.Name,
+		AccountID:   strconv.FormatInt(accountID, 10),
+		Utilization: quota.Utilization,
+		Limit:       quota.Limit,
+	}
 }
 
 func (m *OpenCodeAgentManager) handlePollError(account store.OpenCodeAccount, err error) {

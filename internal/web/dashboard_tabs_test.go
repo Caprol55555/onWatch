@@ -40,6 +40,22 @@ func TestOrderDashboardProviders_NewProviderBeforeBoth(t *testing.T) {
 	}
 }
 
+func TestOrderDashboardProviders_PreservesExplicitSpecialTabPosition(t *testing.T) {
+	t.Parallel()
+	available := []string{"anthropic", "zai", "api-integrations", "both"}
+	preferred := []string{"both", "zai", "api-integrations", "anthropic"}
+	got := orderDashboardProviders(available, preferred)
+	want := []string{"both", "zai", "api-integrations", "anthropic"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v want %v", got, want)
+		}
+	}
+}
+
 func TestNormalizeDashboardProviderLabel(t *testing.T) {
 	t.Parallel()
 	if _, ok := normalizeDashboardProviderLabel("   "); ok {

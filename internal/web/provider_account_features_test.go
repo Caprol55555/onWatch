@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/onllm-dev/onwatch/v2/internal/api"
 	"github.com/onllm-dev/onwatch/v2/internal/config"
 	"github.com/onllm-dev/onwatch/v2/internal/store"
 )
@@ -151,6 +152,67 @@ func TestAccountConnectionTestsDoNotPersistCredentials(t *testing.T) {
 	}
 	if len(openCode) != 0 || configuredMiniMax != 0 {
 		t.Fatalf("connection tests persisted accounts: opencode=%v minimax=%v", openCode, miniMax)
+	}
+}
+
+func TestProviderCredentialTestValidatesWithoutPersistingSecrets(t *testing.T) {
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	h := NewHandler(s, nil, nil, nil, &config.Config{})
+	h.providerCredentialConnectionTest = func(_ context.Context, provider string, values map[string]string) error {
+		if provider != "zai" {
+			t.Fatalf("unexpected provider credential test: provider=%q", provider)
+		}
+		if values["api_key"] != "zai-secret" || values["region"] != "cn" {
+			t.Fatal("provider credential values were not normalized as expected")
+		}
+		return nil
+	}
+
+	rr := httptest.NewRecorder()
+	h.ProviderCredentialTest(rr, httptest.NewRequest(http.MethodPost, "/api/providers/test", strings.NewReader(`{"provider":"zai","settings":{"api_key":"zai-secret","region":"cn"}}`)))
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"success":true`) {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "zai-secret") {
+		t.Fatalf("response leaked API key: %s", rr.Body.String())
+	}
+	stored, _ := s.GetSetting("provider_settings")
+	if stored != "" {
+		t.Fatalf("connection test persisted settings: %s", stored)
+	}
+}
+
+func TestProviderCredentialTestNormalizesSupportedProvidersAndErrors(t *testing.T) {
+	for _, tc := range []struct {
+		provider string
+		settings map[string]string
+	}{
+		{"synthetic", map[string]string{"api_key": "secret"}},
+		{"zai", map[string]string{"api_key": "secret", "region": "CN"}},
+		{"copilot", map[string]string{"token": "secret"}},
+		{"openrouter", map[string]string{"api_key": "secret"}},
+		{"moonshot", map[string]string{"api_key": "secret"}},
+		{"deepseek", map[string]string{"api_key": "secret"}},
+	} {
+		t.Run(tc.provider, func(t *testing.T) {
+			values, ok := normalizeProviderCredentialValues(tc.provider, tc.settings)
+			if !ok || len(values) == 0 {
+				t.Fatalf("provider %s was not accepted", tc.provider)
+			}
+		})
+	}
+	if _, ok := normalizeProviderCredentialValues("unknown", map[string]string{"api_key": "secret"}); ok {
+		t.Fatal("unsupported provider must be rejected")
+	}
+	if got := providerCredentialError(api.ErrZaiUnauthorized); got != "authentication_failed" {
+		t.Fatalf("unauthorized mapping=%q", got)
+	}
+	if got := providerCredentialError(api.ErrZaiInvalidResponse); got != "quota_parse_failed" {
+		t.Fatalf("invalid response mapping=%q", got)
 	}
 }
 

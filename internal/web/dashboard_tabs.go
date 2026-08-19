@@ -90,16 +90,16 @@ func normalizeDashboardProviderLabel(label string) (string, bool) {
 	return label, true
 }
 
-// isDashboardSpecialTab is true for composite/header-only tabs that should stay
-// after real providers when a saved order omits newly added providers.
+// isDashboardSpecialTab is true for composite/header-only tabs. Explicitly
+// saved positions are respected; newly discovered providers are inserted before
+// the first special tab so they are not buried after a combined view.
 func isDashboardSpecialTab(key string) bool {
 	return key == "both" || key == "api-integrations"
 }
 
 // orderDashboardProviders reorders available keys using a saved preference list.
 // Unknown keys in order are dropped; available keys missing from order are inserted
-// before special tabs (api-integrations / both) so a new provider is never buried
-// after the All tab.
+// before the first special tab so a new provider is never buried after the All tab.
 func orderDashboardProviders(available, preferred []string) []string {
 	if len(available) == 0 {
 		return []string{}
@@ -109,8 +109,7 @@ func orderDashboardProviders(available, preferred []string) []string {
 		availSet[k] = struct{}{}
 	}
 	seen := make(map[string]struct{}, len(available))
-	regular := make([]string, 0, len(available))
-	specials := make([]string, 0, 2)
+	ordered := make([]string, 0, len(available))
 
 	appendKey := func(k string) {
 		if _, ok := availSet[k]; !ok {
@@ -120,44 +119,36 @@ func orderDashboardProviders(available, preferred []string) []string {
 			return
 		}
 		seen[k] = struct{}{}
-		if isDashboardSpecialTab(k) {
-			specials = append(specials, k)
-			return
-		}
-		regular = append(regular, k)
+		ordered = append(ordered, k)
 	}
 
 	for _, k := range preferred {
 		appendKey(strings.TrimSpace(strings.ToLower(k)))
 	}
-	// Missing available keys (e.g. newly enabled Grok) join regular providers
-	// in AvailableProviders order, still before specials.
+	insertAt := len(ordered)
+	for i, key := range ordered {
+		if isDashboardSpecialTab(key) {
+			insertAt = i
+			break
+		}
+	}
+	// Missing available keys (e.g. newly enabled Grok) join before the first
+	// special tab. Missing special tabs are appended after the real providers.
 	for _, k := range available {
-		appendKey(k)
-	}
-
-	// Stable special order: api-integrations then both, regardless of discovery order.
-	specialOrder := []string{"api-integrations", "both"}
-	orderedSpecials := make([]string, 0, len(specials))
-	specialSeen := map[string]struct{}{}
-	for _, k := range specialOrder {
-		for _, s := range specials {
-			if s == k {
-				orderedSpecials = append(orderedSpecials, s)
-				specialSeen[s] = struct{}{}
-			}
+		if _, exists := seen[k]; exists {
+			continue
 		}
-	}
-	for _, s := range specials {
-		if _, ok := specialSeen[s]; !ok {
-			orderedSpecials = append(orderedSpecials, s)
+		seen[k] = struct{}{}
+		if isDashboardSpecialTab(k) {
+			ordered = append(ordered, k)
+			continue
 		}
+		ordered = append(ordered, "")
+		copy(ordered[insertAt+1:], ordered[insertAt:])
+		ordered[insertAt] = k
+		insertAt++
 	}
-
-	out := make([]string, 0, len(regular)+len(orderedSpecials))
-	out = append(out, regular...)
-	out = append(out, orderedSpecials...)
-	return out
+	return ordered
 }
 
 // resolveProviderTabLabel returns custom label if set, otherwise the default.

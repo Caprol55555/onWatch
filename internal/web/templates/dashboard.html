@@ -380,7 +380,7 @@
             </section>
         </div>
         {{else if ne .CurrentProvider "both"}}
-        <section class="insights-panel">
+        <section class="insights-panel" {{if eq .CurrentProvider "zai"}}data-requires-provider-data="zai" hidden{{end}}{{if eq .CurrentProvider "deepseek"}}data-requires-provider-data="deepseek" hidden{{end}}>
             <header class="section-header">
                 <h3 class="section-title">
                     <svg class="section-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -398,7 +398,7 @@
         {{end}}
 
         {{if ne .CurrentProvider "both"}}
-        <section class="chart-section">
+        <section class="chart-section" {{if eq .CurrentProvider "zai"}}data-requires-provider-data="zai" hidden{{end}}{{if eq .CurrentProvider "deepseek"}}data-requires-provider-data="deepseek" hidden{{end}}>
             <header class="section-header">
                 <h3 class="section-title">
                     <svg class="section-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -506,7 +506,7 @@
         {{end}}
 
         {{if and (ne .CurrentProvider "both") (ne .CurrentProvider "api-integrations") (ne .CurrentProvider "cursor") (ne .CurrentProvider "opencode")}}
-        <section class="sessions-section" id="sessions-section">
+        <section class="sessions-section" id="sessions-section" {{if eq .CurrentProvider "zai"}}data-requires-provider-data="zai" hidden{{end}}{{if eq .CurrentProvider "deepseek"}}data-requires-provider-data="deepseek" hidden{{end}}>
             <header class="section-header">
                 <h3 class="section-title">
                     <svg class="section-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -614,7 +614,7 @@
         {{end}}
 
         {{if and (ne .CurrentProvider "both") (ne .CurrentProvider "api-integrations")}}
-        <section class="cycles-section" id="cycles-section">
+        <section class="cycles-section" id="cycles-section" {{if eq .CurrentProvider "zai"}}data-requires-provider-data="zai" hidden{{end}}{{if eq .CurrentProvider "deepseek"}}data-requires-provider-data="deepseek" hidden{{end}}>
             <header class="section-header">
                 <h3 class="section-title">
                     <svg class="section-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -673,7 +673,7 @@
             </div>
         </section>
 
-        <section class="cycle-overview-section">
+        <section class="cycle-overview-section" {{if eq .CurrentProvider "zai"}}data-requires-provider-data="zai" hidden{{end}}{{if eq .CurrentProvider "deepseek"}}data-requires-provider-data="deepseek" hidden{{end}}>
             <header class="section-header">
                 <h3 class="section-title">
                     <svg class="section-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

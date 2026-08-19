@@ -107,6 +107,7 @@ func NewServer(port int, handler *Handler, logger *slog.Logger, username, passwo
 	mux.HandleFunc(p("/api/opencode/accounts/template"), handler.OpenCodeAccountsTemplate)
 	mux.HandleFunc(p("/api/opencode/accounts/test"), handler.OpenCodeAccountTest)
 	mux.HandleFunc(p("/api/opencode/accounts/summary"), handler.OpenCodeAccountsSummary)
+	mux.HandleFunc(p("/api/providers/test"), handler.ProviderCredentialTest)
 	mux.HandleFunc(p("/api/api-integrations/current"), handler.APIIntegrationsCurrent)
 	mux.HandleFunc(p("/api/api-integrations/history"), handler.APIIntegrationsHistory)
 	mux.HandleFunc(p("/api/api-integrations/health"), handler.APIIntegrationsHealth)

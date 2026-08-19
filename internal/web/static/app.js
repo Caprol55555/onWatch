@@ -4102,6 +4102,12 @@ function renderProviderDataState(containerId, hasData, provider) {
   container.appendChild(state);
 }
 
+function setProviderDataSectionsVisible(provider, hasData) {
+  document.querySelectorAll(`[data-requires-provider-data="${provider}"]`).forEach((section) => {
+    section.hidden = !hasData;
+  });
+}
+
 function deepSeekCurrencyPrefix(currency) {
   if (currency === 'CNY') return '¥';
   if (currency === 'USD') return '$';
@@ -4122,6 +4128,7 @@ function renderDeepSeekBalanceCards(data) {
 
   const hasData = data?.hasData === true;
   renderProviderDataState('quota-grid-deepseek', hasData, 'DeepSeek');
+  setProviderDataSectionsVisible('deepseek', hasData);
   if (!hasData) return;
 
   const balance = data.balance || {};
@@ -4487,6 +4494,7 @@ async function fetchCurrent() {
         }
       } else if (provider === 'zai') {
         renderProviderDataState('quota-grid', data.hasData, 'Z.ai');
+        setProviderDataSectionsVisible('zai', data.hasData);
         if (data.hasData) {
           updateCard('tokensLimit', data.tokensLimit);
           updateCard('timeLimit', data.timeLimit);
@@ -10379,27 +10387,27 @@ function mergeDashboardProviderOrder(preferred, available) {
   const avail = Array.isArray(available) ? available.filter(Boolean) : [];
   const availSet = new Set(avail);
   const seen = new Set();
-  const regular = [];
-  const specials = [];
+  const ordered = [];
   const pushKey = (key) => {
     const k = String(key || '').trim().toLowerCase();
     if (!k || !availSet.has(k) || seen.has(k)) return;
     seen.add(k);
-    if (isDashboardSpecialTab(k)) specials.push(k);
-    else regular.push(k);
+    ordered.push(k);
   };
   (Array.isArray(preferred) ? preferred : []).forEach(pushKey);
-  // Newly available providers (e.g. Grok) join before special tabs.
-  avail.forEach(pushKey);
-  const specialOrder = ['api-integrations', 'both'];
-  const orderedSpecials = [];
-  specialOrder.forEach((k) => {
-    if (specials.includes(k)) orderedSpecials.push(k);
+  let insertAt = ordered.findIndex(isDashboardSpecialTab);
+  if (insertAt < 0) insertAt = ordered.length;
+  avail.forEach((key) => {
+    if (seen.has(key)) return;
+    seen.add(key);
+    if (isDashboardSpecialTab(key)) {
+      ordered.push(key);
+      return;
+    }
+    ordered.splice(insertAt, 0, key);
+    insertAt += 1;
   });
-  specials.forEach((k) => {
-    if (!orderedSpecials.includes(k)) orderedSpecials.push(k);
-  });
-  return regular.concat(orderedSpecials);
+  return ordered;
 }
 
 async function fetchDashboardTabOrderProviders() {
@@ -11044,6 +11052,7 @@ function createProviderSettingsConfig() {
   copilot: {
     title: 'Copilot',
     desc: tr('provider_settings.copilot_desc'),
+    connectionTest: true,
     fields: [
       { id: 'token', label: tr('provider_settings.github_pat'), type: 'password', placeholder: tr('provider_settings.not_configured'), hint: tr('provider_settings.copilot_token_hint'), sensitive: true },
     ],
@@ -11052,6 +11061,7 @@ function createProviderSettingsConfig() {
     title: 'Z.ai',
     desc: tr('provider_settings.zai_desc'),
     liveReload: true,
+    connectionTest: true,
     fields: [
       { id: 'api_key', label: tr('provider_settings.api_key'), type: 'password', placeholder: tr('provider_settings.not_configured'), hint: tr('provider_settings.zai_key_hint'), sensitive: true },
       { id: 'region', label: tr('provider_settings.region'), type: 'select', options: [
@@ -11069,6 +11079,7 @@ function createProviderSettingsConfig() {
   openrouter: {
     title: 'OpenRouter',
     desc: tr('provider_settings.openrouter_desc'),
+    connectionTest: true,
     fields: [
       { id: 'api_key', label: tr('provider_settings.api_key'), type: 'password', placeholder: tr('provider_settings.not_configured'), hint: tr('provider_settings.openrouter_key_hint'), sensitive: true },
     ],
@@ -11076,6 +11087,7 @@ function createProviderSettingsConfig() {
   synthetic: {
     title: 'Synthetic',
     desc: tr('provider_settings.synthetic_desc'),
+    connectionTest: true,
     fields: [
       { id: 'api_key', label: tr('provider_settings.api_key'), type: 'password', placeholder: tr('provider_settings.not_configured'), hint: tr('provider_settings.synthetic_key_hint'), sensitive: true },
     ],
@@ -11083,6 +11095,7 @@ function createProviderSettingsConfig() {
   moonshot: {
     title: 'Moonshot',
     desc: tr('provider_settings.moonshot_desc'),
+    connectionTest: true,
     fields: [
       { id: 'api_key', label: tr('provider_settings.api_key'), type: 'password', placeholder: tr('provider_settings.not_configured'), hint: tr('provider_settings.moonshot_key_hint'), sensitive: true },
     ],
@@ -11091,6 +11104,7 @@ function createProviderSettingsConfig() {
     title: 'DeepSeek',
     desc: tr('provider_settings.deepseek_desc'),
     liveReload: true,
+    connectionTest: true,
     fields: [
       { id: 'api_key', label: tr('provider_settings.api_key'), type: 'password', placeholder: tr('provider_settings.not_configured'), hint: tr('provider_settings.deepseek_key_hint'), sensitive: true },
     ],
@@ -11464,7 +11478,7 @@ async function renderOpenCodeAccountSettings(bodyEl, config) {
         }
         const response = await authFetch(`${API_BASE}/api/opencode/accounts?id=${account.account_id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
         if (response.ok) { await loadOpenCodeAccounts(); await openProviderSettingsModal('opencode'); }
-        else { const error = await response.json().catch(() => ({})); alert(error.error || tr('opencode.failed_update')); }
+        else { const error = await response.json().catch(() => ({})); showToast(error.error || tr('opencode.failed_update'), 'error'); }
       });
     });
   } catch (_) { list.innerHTML = `<p class="empty-state">${tr('opencode.failed_load')}</p>`; }
@@ -11521,6 +11535,9 @@ async function openProviderSettingsModal(providerKey) {
       html += '</div>';
     });
     html += '</div>';
+    if (config.connectionTest) {
+      html += `<div class="settings-actions"><button type="button" id="provider-settings-test" class="provider-settings-action">${tr('settings.test_connection')}</button></div>`;
+    }
     return html;
   };
 
@@ -11579,12 +11596,12 @@ async function openProviderSettingsModal(providerKey) {
                   await openProviderSettingsModal('codex');
                 } else {
                   const errData = await res.json().catch(() => ({}));
-                  alert(tr('common.failed_action', { action: action === 'refresh' ? tr('common.refresh') : tr('common.delete'), error: errData.error || res.statusText }));
+                  showToast(tr('common.failed_action', { action: action === 'refresh' ? tr('common.refresh') : tr('common.delete'), error: errData.error || res.statusText }), 'error');
                   btn.disabled = false;
                   btn.textContent = action === 'refresh' ? tr('common.refresh') : tr('common.delete');
                 }
               } catch (err) {
-                alert(tr('common.failed_action', { action: action === 'refresh' ? tr('common.refresh') : tr('common.delete'), error: err.message }));
+                showToast(tr('common.failed_action', { action: action === 'refresh' ? tr('common.refresh') : tr('common.delete'), error: err.message }), 'error');
                 btn.disabled = false;
                 btn.textContent = action === 'refresh' ? tr('common.refresh') : tr('common.delete');
               }
@@ -11678,8 +11695,8 @@ async function openProviderSettingsModal(providerKey) {
                 try {
                   const res = await authFetch(`${API_BASE}/api/minimax/accounts?id=${id}`, { method: 'DELETE' });
                   if (res.ok) { await openProviderSettingsModal('minimax'); }
-                  else { const e = await res.json().catch(() => ({})); alert(tr('minimax.failed_delete', { error: e.error || res.statusText })); btn.disabled = false; btn.textContent = tr('common.delete'); }
-                } catch (e) { alert(tr('minimax.failed_delete', { error: e.message })); btn.disabled = false; btn.textContent = tr('common.delete'); }
+                  else { const e = await res.json().catch(() => ({})); showToast(tr('minimax.failed_delete', { error: e.error || res.statusText }), 'error'); btn.disabled = false; btn.textContent = tr('common.delete'); }
+                } catch (e) { showToast(tr('minimax.failed_delete', { error: e.message }), 'error'); btn.disabled = false; btn.textContent = tr('common.delete'); }
               } else if (action === 'restore') {
                 btn.disabled = true; btn.textContent = '...';
                 try {
@@ -11689,8 +11706,8 @@ async function openProviderSettingsModal(providerKey) {
                     body: JSON.stringify({ restore: true }),
                   });
                   if (res.ok) { await openProviderSettingsModal('minimax'); }
-                  else { const e = await res.json().catch(() => ({})); alert(tr('common.failed_action', { action: tr('common.restore'), error: e.error || res.statusText })); btn.disabled = false; btn.textContent = tr('common.restore'); }
-                } catch (e) { alert(tr('common.failed_action', { action: tr('common.restore'), error: e.message })); btn.disabled = false; btn.textContent = tr('common.restore'); }
+                  else { const e = await res.json().catch(() => ({})); showToast(tr('common.failed_action', { action: tr('common.restore'), error: e.error || res.statusText }), 'error'); btn.disabled = false; btn.textContent = tr('common.restore'); }
+                } catch (e) { showToast(tr('common.failed_action', { action: tr('common.restore'), error: e.message }), 'error'); btn.disabled = false; btn.textContent = tr('common.restore'); }
               } else if (action === 'edit') {
                 // Show inline edit form
                 const item = btn.closest('.minimax-account-item');
@@ -11728,8 +11745,8 @@ async function openProviderSettingsModal(providerKey) {
                       body: JSON.stringify(body),
                     });
                     if (res.ok) { await openProviderSettingsModal('minimax'); }
-                    else { const err = await res.json().catch(() => ({})); alert(tr('minimax.failed_update', { error: err.error || res.statusText })); saveBtn.disabled = false; saveBtn.textContent = tr('common.save'); }
-                  } catch (e) { alert(tr('minimax.failed_update', { error: e.message })); saveBtn.disabled = false; saveBtn.textContent = tr('common.save'); }
+                    else { const err = await res.json().catch(() => ({})); showToast(tr('minimax.failed_update', { error: err.error || res.statusText }), 'error'); saveBtn.disabled = false; saveBtn.textContent = tr('common.save'); }
+                  } catch (e) { showToast(tr('minimax.failed_update', { error: e.message }), 'error'); saveBtn.disabled = false; saveBtn.textContent = tr('common.save'); }
                 });
               }
             });
@@ -11748,12 +11765,60 @@ async function openProviderSettingsModal(providerKey) {
   // Store which provider is being edited
   modal.dataset.providerKey = providerKey;
   modal.hidden = false;
+  document.getElementById('provider-settings-test')?.addEventListener('click', () => testProviderSettingsConnection(providerKey));
 }
 
 function closeProviderSettingsModal() {
   closeProviderAccountEditor();
   const modal = document.getElementById('provider-settings-modal');
   if (modal) modal.hidden = true;
+}
+
+async function testProviderSettingsConnection(providerKey) {
+  const config = providerSettingsConfig[providerKey];
+  const button = document.getElementById('provider-settings-test');
+  if (!config?.connectionTest || !button) return;
+
+  const settings = {};
+  let hasEnteredCredential = false;
+  config.fields.forEach((field) => {
+    const input = document.getElementById(`ps-${providerKey}-${field.id}`);
+    if (!input) return;
+    const value = String(input.value || '').trim();
+    if (field.sensitive) {
+      if (value) {
+        settings[field.id] = value;
+        hasEnteredCredential = true;
+      }
+      return;
+    }
+    settings[field.id] = value;
+  });
+  if (!hasEnteredCredential) {
+    showToast(tr('settings.enter_credentials_to_test'), 'error');
+    return;
+  }
+
+  button.disabled = true;
+  button.textContent = tr('settings.testing_connection');
+  try {
+    const response = await authFetch(`${API_BASE}/api/providers/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: providerKey, settings }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.success) {
+      showToast(tr('settings.connection_failed', { error: connectionErrorText(data.error) }), 'error');
+      return;
+    }
+    showToast(tr('settings.connection_success'), 'success');
+  } catch (_) {
+    showToast(tr('settings.connection_failed', { error: connectionErrorText('network_error') }), 'error');
+  } finally {
+    button.disabled = false;
+    button.textContent = tr('settings.test_connection');
+  }
 }
 
 async function saveProviderSettings() {
@@ -12170,11 +12235,10 @@ function setupSettingsAutoSave() {
 }
 
 function showSettingsFeedback(el, msg, type) {
+  showToast(msg, type);
   if (!el) return;
-  el.textContent = msg;
-  el.className = 'settings-feedback ' + type;
-  el.hidden = false;
-  setTimeout(() => { el.hidden = true; }, 5000);
+  el.textContent = '';
+  el.hidden = true;
 }
 
 function setupSMTPTest() {
@@ -12625,6 +12689,7 @@ function addOverrideRow(quotaKey, provider, warning, critical, isAbsolute, disab
       <option value="deepseek" ${provider === 'deepseek' ? 'selected' : ''}>DeepSeek</option>
       <option value="synthetic" ${provider === 'synthetic' ? 'selected' : ''}>Synthetic</option>
       <option value="zai" ${provider === 'zai' ? 'selected' : ''}>Z.ai</option>
+      <option value="opencode" ${provider === 'opencode' ? 'selected' : ''}>OpenCode Go</option>
     </select>
     <select class="settings-input override-quota" style="flex:2">
       <option value="">${tr('settings.select_quota')}</option>

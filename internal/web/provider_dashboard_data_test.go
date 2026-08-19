@@ -97,3 +97,25 @@ func TestProviderDashboardRecognizesAndRendersBalanceProviders(t *testing.T) {
 		}
 	}
 }
+
+func TestZaiPendingStateHidesDataDependentDashboardSections(t *testing.T) {
+	t.Parallel()
+	appJS := readStaticAppJS(t)
+	for _, marker := range []string{
+		"setProviderDataSectionsVisible('zai', data.hasData)",
+		"setProviderDataSectionsVisible('deepseek', hasData)",
+		"data-requires-provider-data=\"${provider}\"",
+	} {
+		if !strings.Contains(appJS, marker) {
+			t.Errorf("Z.ai pending-state handling missing %q", marker)
+		}
+	}
+
+	dashboard := readEmbeddedFile(t, "templates/dashboard.html")
+	if strings.Count(dashboard, `data-requires-provider-data="zai"`) < 3 {
+		t.Fatal("Z.ai insights, trend, and history sections must be marked as data-dependent")
+	}
+	if strings.Count(dashboard, `data-requires-provider-data="deepseek"`) < 3 {
+		t.Fatal("DeepSeek insights, trend, and history sections must be marked as data-dependent")
+	}
+}

@@ -79,3 +79,43 @@ func TestOpenCodeAccountActionsStayOnOneLine(t *testing.T) {
 		t.Fatal("OpenCode account action buttons must be protected from text wrapping")
 	}
 }
+
+func TestSettingsFeedbackUsesGlobalToastNotifications(t *testing.T) {
+	t.Parallel()
+	appJS := readStaticAppJS(t)
+	start := strings.Index(appJS, "function showSettingsFeedback(")
+	if start < 0 {
+		t.Fatal("showSettingsFeedback helper missing")
+	}
+	end := strings.Index(appJS[start:], "\n}")
+	if end < 0 {
+		t.Fatal("showSettingsFeedback helper is malformed")
+	}
+	body := appJS[start : start+end]
+	if !strings.Contains(body, "showToast(msg, type)") {
+		t.Fatal("settings operation feedback must use global toast notifications")
+	}
+	if strings.Contains(body, "el.textContent = msg") {
+		t.Fatal("settings operation feedback must not append an inline notification row")
+	}
+	if strings.Contains(appJS, "alert(") {
+		t.Fatal("settings operations must use application toasts instead of browser alerts")
+	}
+}
+
+func TestSingleAccountCredentialProvidersExposeConnectionTest(t *testing.T) {
+	t.Parallel()
+	appJS := readStaticAppJS(t)
+	for _, marker := range []string{
+		"connectionTest: true",
+		"async function testProviderSettingsConnection",
+		"${API_BASE}/api/providers/test",
+	} {
+		if !strings.Contains(appJS, marker) {
+			t.Errorf("single-account provider connection testing missing %q", marker)
+		}
+	}
+	if !strings.Contains(appJS, `<option value="opencode"`) {
+		t.Fatal("notification quota overrides must include OpenCode Go")
+	}
+}

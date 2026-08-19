@@ -148,6 +148,13 @@ func TestOpenCodeAgentManagerRequiresConsecutiveAuthFailuresBeforeReauth(t *test
 	}
 }
 
+func TestOpenCodeNotificationStatusSeparatesAccountFromQuota(t *testing.T) {
+	status := openCodeNotificationStatus(42, api.OpenCodeQuota{Name: "weekly", Utilization: 61.5, Limit: 100})
+	if status.Provider != "opencode" || status.QuotaKey != "weekly" || status.AccountID != "42" {
+		t.Fatalf("unexpected notification status: %+v", status)
+	}
+}
+
 func TestOpenCodeAgentManagerDiscardsStaleCredentialResult(t *testing.T) {
 	t.Setenv("ONWATCH_CREDENTIAL_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
 	s, err := store.New(":memory:")
