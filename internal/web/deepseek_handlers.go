@@ -18,15 +18,17 @@ func (h *Handler) buildDeepSeekCurrent() map[string]interface{} {
 	now := time.Now().UTC()
 	response := map[string]interface{}{
 		"capturedAt": now.Format(time.RFC3339),
+		"hasData":    false,
 		"balance": map[string]interface{}{
 			"name":        "Balance",
 			"description": "DeepSeek API balance",
-			"available":   true,
+			"available":   false,
 			"currency":    "",
 			"total":       0.0,
 			"granted":     0.0,
 			"toppedUp":    0.0,
 			"rate":        0.0,
+			"status":      "pending",
 		},
 	}
 
@@ -38,13 +40,16 @@ func (h *Handler) buildDeepSeekCurrent() map[string]interface{} {
 		}
 
 		if latest != nil {
+			response["hasData"] = true
 			response["capturedAt"] = latest.CapturedAt.Format(time.RFC3339)
-			
+
 			status := "healthy"
-			if latest.TotalBalance == 0 {
-				status = "exhausted"
+			if !latest.IsAvailable {
+				status = "warning"
+			} else if latest.TotalBalance <= 0 {
+				status = "critical"
 			}
-			
+
 			balance := map[string]interface{}{
 				"name":        "Balance",
 				"description": "DeepSeek API balance",
@@ -268,7 +273,7 @@ func (h *Handler) buildDeepSeekInsights(currency string, hidden map[string]bool)
 		})
 		return resp
 	}
-	
+
 	if latest.Currency != currency {
 		// Only reporting for currently tracked currency
 		return resp
@@ -306,7 +311,7 @@ func (h *Handler) buildDeepSeekInsights(currency string, hidden map[string]bool)
 			}
 		}
 	}
-	
+
 	if !latest.IsAvailable {
 		resp.Insights = append(resp.Insights, insightItem{
 			Type: "warning", Severity: "high",

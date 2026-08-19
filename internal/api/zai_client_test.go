@@ -215,6 +215,32 @@ func TestZaiClient_FetchQuotas_EmptyBody(t *testing.T) {
 	}
 }
 
+func TestZaiClient_FetchQuotas_EmptyLimits(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"code":    200,
+			"msg":     "Operation successful",
+			"success": true,
+			"data": map[string]interface{}{
+				"limits": []interface{}{},
+			},
+		})
+	}))
+	defer server.Close()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	client := NewZaiClient("zai_test_key_12345", logger, WithZaiBaseURL(server.URL))
+
+	_, err := client.FetchQuotas(context.Background())
+	if err == nil {
+		t.Fatal("FetchQuotas() should reject a successful response without quota limits")
+	}
+	if !errors.Is(err, ErrZaiInvalidResponse) {
+		t.Fatalf("expected ErrZaiInvalidResponse, got %v", err)
+	}
+}
+
 func TestZaiClient_SetsAuthHeader(t *testing.T) {
 	var authHeader string
 	var mu sync.Mutex

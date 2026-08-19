@@ -135,6 +135,9 @@ func (c *ZaiClient) FetchQuotas(ctx context.Context) (*ZaiQuotaResponse, error) 
 
 	// The quota response is already parsed in the wrapper
 	quotaResp := wrapper.Data
+	if !quotaResp.HasSupportedLimits() {
+		return nil, fmt.Errorf("%w: response contains no supported quota limits", ErrZaiInvalidResponse)
+	}
 
 	// Log usage info if we have limits
 	if len(quotaResp.Limits) > 0 {

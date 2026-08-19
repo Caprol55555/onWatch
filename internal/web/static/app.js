@@ -131,6 +131,8 @@ function getCurrentProvider() {
   if (minimaxGrid) return 'minimax';
   const openrouterGrid = document.getElementById('quota-grid-openrouter');
   if (openrouterGrid) return 'openrouter';
+  const deepseekGrid = document.getElementById('quota-grid-deepseek');
+  if (deepseekGrid) return 'deepseek';
   const geminiGrid = document.getElementById('quota-grid-gemini');
   if (geminiGrid) return 'gemini';
   const cursorGrid = document.getElementById('quota-grid-cursor');
@@ -4068,6 +4070,91 @@ function sortOpenCodeQuotas(quotas) {
     return leftRank - rightRank;
   });
 }
+
+function renderProviderDataState(containerId, hasData, provider) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  const existing = container.querySelector('.provider-data-state');
+  const cards = container.querySelectorAll('.quota-card');
+  if (hasData) {
+    if (existing) existing.remove();
+    cards.forEach(card => { card.hidden = false; });
+    return;
+  }
+
+  cards.forEach(card => { card.hidden = true; });
+  if (existing) return;
+
+  const state = document.createElement('section');
+  state.className = 'provider-data-state';
+  state.setAttribute('role', 'status');
+  state.innerHTML = `
+    <svg class="provider-data-state-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+      <circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/>
+    </svg>
+    <div>
+      <h2>${escapeHTML(tr('dashboard.no_valid_provider_data', { provider }))}</h2>
+      <p>${escapeHTML(tr('dashboard.provider_data_help'))}</p>
+    </div>
+    <span class="status-badge" data-status="pending">${statusConfig.pending.label}</span>
+  `;
+  container.appendChild(state);
+}
+
+function deepSeekCurrencyPrefix(currency) {
+  if (currency === 'CNY') return '¥';
+  if (currency === 'USD') return '$';
+  return currency ? `${currency} ` : '';
+}
+
+function formatBalanceAmount(value) {
+  const amount = Number(value || 0);
+  return new Intl.NumberFormat(getActiveLocale(), {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(Number.isFinite(amount) ? amount : 0);
+}
+
+function renderDeepSeekBalanceCards(data) {
+  const container = document.getElementById('quota-grid-deepseek');
+  if (!container) return;
+
+  const hasData = data?.hasData === true;
+  renderProviderDataState('quota-grid-deepseek', hasData, 'DeepSeek');
+  if (!hasData) return;
+
+  const balance = data.balance || {};
+  const prefix = deepSeekCurrencyPrefix(balance.currency);
+  const status = balance.status || 'healthy';
+  const statusCfg = statusConfig[status] || statusConfig.healthy;
+  const items = [
+    { key: 'total', label: tr('deepseek.total_balance'), value: balance.total, primary: true },
+    { key: 'granted', label: tr('deepseek.granted_balance'), value: balance.granted },
+    { key: 'topped-up', label: tr('deepseek.topped_up_balance'), value: balance.toppedUp },
+  ];
+
+  container.innerHTML = items.map((item) => `
+    <article class="quota-card balance-card" data-quota="${item.key}" data-provider="deepseek">
+      <header class="card-header">
+        <h2 class="quota-title">
+          <svg class="quota-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M16 14h2"/>
+          </svg>
+          ${escapeHTML(item.label)}
+        </h2>
+      </header>
+      <div class="balance-card-value">${escapeHTML(prefix)}${formatBalanceAmount(item.value)}</div>
+      <footer class="card-footer">
+        ${item.primary ? `<span class="status-badge" data-status="${status}">
+          <svg class="status-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="${statusCfg.icon}"/></svg>
+          ${statusCfg.label}
+        </span>` : '<span></span>'}
+        <span class="balance-card-currency">${escapeHTML(balance.currency || '')}</span>
+      </footer>
+    </article>
+  `).join('');
+}
 const opencodeDisplayNames = {
   five_hour: tr('quota.five_hour'),
   weekly: tr('quota.weekly'),
@@ -4398,11 +4485,15 @@ async function fetchCurrent() {
             data.quotas.forEach(q => updateOpenCodeCard(q));
           }
         }
-
       } else if (provider === 'zai') {
-        updateCard('tokensLimit', data.tokensLimit);
-        updateCard('timeLimit', data.timeLimit);
-        updateCard('toolCalls', data.toolCalls);
+        renderProviderDataState('quota-grid', data.hasData, 'Z.ai');
+        if (data.hasData) {
+          updateCard('tokensLimit', data.tokensLimit);
+          updateCard('timeLimit', data.timeLimit);
+          updateCard('toolCalls', data.toolCalls);
+        }
+      } else if (provider === 'deepseek') {
+        renderDeepSeekBalanceCards(data);
       } else {
         updateCard('subscription', data.subscription);
         updateCard('search', data.search);

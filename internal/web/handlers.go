@@ -2517,7 +2517,7 @@ func (h *Handler) buildZaiCurrent() map[string]interface{} {
 			return response
 		}
 
-		if latest != nil {
+		if latest != nil && latest.HasQuotaData() {
 			response["hasData"] = true
 			response["capturedAt"] = latest.CapturedAt.Format(time.RFC3339)
 			tokensResp := buildZaiTokensQuotaResponse(latest)

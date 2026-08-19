@@ -19,6 +19,22 @@ type ZaiQuotaResponse struct {
 	Limits []ZaiLimit `json:"limits"`
 }
 
+// HasSupportedLimits reports whether the response contains at least one quota
+// type that onWatch knows how to persist and display. Z.ai can return a
+// successful wrapper with an empty limits array, which is not a valid quota
+// snapshot and must not be stored as a healthy all-zero reading.
+func (r *ZaiQuotaResponse) HasSupportedLimits() bool {
+	if r == nil {
+		return false
+	}
+	for _, limit := range r.Limits {
+		if limit.Type == "TIME_LIMIT" || limit.Type == "TOKENS_LIMIT" {
+			return true
+		}
+	}
+	return false
+}
+
 // ZaiLimit represents an individual limit (TIME_LIMIT or TOKENS_LIMIT)
 type ZaiLimit struct {
 	Type         string           `json:"type"`
@@ -71,6 +87,21 @@ type ZaiSnapshot struct {
 	TokensRemaining     float64
 	TokensPercentage    int
 	TokensNextResetTime *time.Time
+}
+
+// HasQuotaData reports whether a persisted snapshot contains any usable quota
+// fields. This also protects dashboards that already contain legacy snapshots
+// produced from empty successful API responses.
+func (s *ZaiSnapshot) HasQuotaData() bool {
+	if s == nil {
+		return false
+	}
+	return s.TimeLimit != 0 || s.TimeUnit != 0 || s.TimeNumber != 0 ||
+		s.TimeUsage != 0 || s.TimeCurrentValue != 0 || s.TimeRemaining != 0 ||
+		s.TimePercentage != 0 || s.TimeUsageDetails != "" ||
+		s.TokensLimit != 0 || s.TokensUnit != 0 || s.TokensNumber != 0 ||
+		s.TokensUsage != 0 || s.TokensCurrentValue != 0 || s.TokensRemaining != 0 ||
+		s.TokensPercentage != 0 || s.TokensNextResetTime != nil
 }
 
 // ToSnapshot converts ZaiQuotaResponse to ZaiSnapshot
