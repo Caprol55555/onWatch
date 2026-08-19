@@ -147,8 +147,7 @@ class TestSettings:
             """
         )
 
-        sp.save_settings()
-        expect(settings_page.locator("#settings-feedback")).to_contain_text("Settings saved successfully")
+        expect(settings_page.locator("#settings-feedback")).to_contain_text("Settings saved")
 
         prefs_after_save = settings_page.evaluate(
             """
@@ -188,14 +187,20 @@ class TestSettings:
         # Default should be empty string (browser default)
         assert tz is not None
 
-    def test_save_settings_button(self, settings_page: Page) -> None:
-        """The Save Settings button should be present and clickable."""
+    def test_settings_auto_save_without_global_button(self, settings_page: Page) -> None:
+        """Settings should persist changes without a global save button."""
         sp = SettingsPage(settings_page)
-        expect(settings_page.locator("#settings-save-btn")).to_be_visible()
+        expect(settings_page.locator("#settings-save-btn")).to_have_count(0)
 
-        # Click save -- may show success or error depending on config state
-        sp.save_settings()
-        settings_page.wait_for_timeout(1000)
-        # Feedback area should become visible after save
-        feedback_el = settings_page.query_selector("#settings-feedback")
-        assert feedback_el is not None
+        sp.select_tab("general")
+        interval = settings_page.locator("#settings-poll-interval")
+        current = interval.input_value()
+        updated = "300" if current != "300" else "120"
+        interval.fill(updated)
+        interval.blur()
+
+        expect(settings_page.locator("#settings-feedback")).to_contain_text("Settings saved")
+        persisted = settings_page.evaluate(
+            """async () => (await (await fetch('/api/settings', {credentials: 'same-origin'})).json()).poll_interval_seconds"""
+        )
+        assert persisted == int(updated)

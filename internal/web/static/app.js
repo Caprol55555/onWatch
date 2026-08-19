@@ -9615,9 +9615,10 @@ async function initSettingsPage() {
   await setupMenubarSettings();
   populateTimezoneSelect();
   await loadSettings();
-  setupSettingsSave();
+  setupSettingsAutoSave();
   setupProviderReload();
   setupProviderSettingsModal();
+  setupProviderAccountEditorModal();
   setupSMTPTest();
   setupPushNotifications();
   setupSettingsPassword();
@@ -10432,6 +10433,7 @@ async function populateDashboardTabOrder() {
       syncDashboardTabOrderFromDOM();
       // Refresh move button disabled state without full re-render (preserves inputs).
       refreshDashboardTabMoveButtons();
+      scheduleSettingsAutoSave(0);
     });
     // Don't start drag when editing the label input.
     const input = item.querySelector('.dashboard-tab-order-label');
@@ -10541,6 +10543,7 @@ function moveDashboardTabItem(providerKey, delta) {
   }
   syncDashboardTabOrderFromDOM();
   refreshDashboardTabMoveButtons();
+  scheduleSettingsAutoSave(0);
 }
 
 async function populateMenubarProviderOrder() {
@@ -10605,6 +10608,7 @@ async function populateMenubarProviderOrder() {
     item.addEventListener('dragend', () => {
       item.classList.remove('dragging');
       syncMenubarProviderOrder();
+      scheduleSettingsAutoSave(0);
     });
   });
 
@@ -11045,6 +11049,148 @@ function translatedAuthStatus(status) {
   return tr(`status.${normalized}`);
 }
 
+let providerAccountEditorSaveHandler = null;
+let providerAccountEditorReturnFocus = null;
+
+function openProviderAccountEditor({ title, bodyHTML, onSave, focusSelector }) {
+  const modal = document.getElementById('provider-account-editor-modal');
+  const titleEl = document.getElementById('provider-account-editor-title');
+  const bodyEl = document.getElementById('provider-account-editor-body');
+  const feedbackEl = document.getElementById('provider-account-editor-feedback');
+  if (!modal || !titleEl || !bodyEl) return;
+
+  titleEl.textContent = title;
+  bodyEl.innerHTML = bodyHTML;
+  providerAccountEditorSaveHandler = onSave;
+  providerAccountEditorReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  if (feedbackEl) {
+    feedbackEl.hidden = true;
+    feedbackEl.textContent = '';
+  }
+  modal.hidden = false;
+  document.getElementById('provider-settings-modal')?.setAttribute('aria-hidden', 'true');
+
+  requestAnimationFrame(() => {
+    const target = focusSelector ? bodyEl.querySelector(focusSelector) : bodyEl.querySelector('input, select, textarea');
+    target?.focus();
+  });
+}
+
+function closeProviderAccountEditor() {
+  const modal = document.getElementById('provider-account-editor-modal');
+  if (modal) modal.hidden = true;
+  document.getElementById('provider-settings-modal')?.removeAttribute('aria-hidden');
+  providerAccountEditorSaveHandler = null;
+  if (providerAccountEditorReturnFocus?.isConnected) providerAccountEditorReturnFocus.focus();
+  providerAccountEditorReturnFocus = null;
+}
+
+function showProviderAccountEditorError(message) {
+  const feedback = document.getElementById('provider-account-editor-feedback');
+  showSettingsFeedback(feedback, message, 'error');
+}
+
+function setupProviderAccountEditorModal() {
+  const modal = document.getElementById('provider-account-editor-modal');
+  const closeBtn = document.getElementById('provider-account-editor-close');
+  const cancelBtn = document.getElementById('provider-account-editor-cancel');
+  const saveBtn = document.getElementById('provider-account-editor-save');
+  if (!modal || !saveBtn) return;
+
+  closeBtn?.addEventListener('click', closeProviderAccountEditor);
+  cancelBtn?.addEventListener('click', closeProviderAccountEditor);
+  modal.addEventListener('click', (event) => {
+    if (event.target === modal) closeProviderAccountEditor();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !modal.hidden) closeProviderAccountEditor();
+  });
+
+  saveBtn.addEventListener('click', async () => {
+    if (typeof providerAccountEditorSaveHandler !== 'function') return;
+    saveBtn.disabled = true;
+    saveBtn.textContent = tr('settings.saving');
+    try {
+      const saved = await providerAccountEditorSaveHandler();
+      if (saved) closeProviderAccountEditor();
+    } catch (error) {
+      showProviderAccountEditorError(error?.message || tr('settings.save_failed'));
+    } finally {
+      saveBtn.disabled = false;
+      saveBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg> ${tr('settings.save')}`;
+    }
+  });
+}
+
+function openOpenCodeAccountCreateDialog(bodyEl, config) {
+  openProviderAccountEditor({
+    title: tr('opencode.add_account'),
+    focusSelector: '#opencode-new-name',
+    bodyHTML: `<div class="settings-fields">
+      <div class="settings-field"><label for="opencode-new-name">${tr('opencode.display_name')}</label><input id="opencode-new-name" class="settings-input" maxlength="80" placeholder="${tr('opencode.name_placeholder')}" /></div>
+      <div class="settings-field"><label for="opencode-new-workspace">${tr('opencode.workspace_id')}</label><input id="opencode-new-workspace" class="settings-input" maxlength="256" placeholder="${tr('opencode.workspace_placeholder')}" /><span class="settings-field-hint">${tr('opencode.workspace_hint')}</span></div>
+      <div class="settings-field"><label for="opencode-new-cookie">${tr('opencode.auth_cookie')}</label><input id="opencode-new-cookie" type="password" class="settings-input" autocomplete="new-password" placeholder="${tr('opencode.cookie_placeholder')}" /><span class="settings-field-hint">${tr('opencode.cookie_source_hint')}</span></div>
+    </div>`,
+    onSave: async () => {
+      const name = document.getElementById('opencode-new-name')?.value.trim();
+      const workspace_id = document.getElementById('opencode-new-workspace')?.value.trim();
+      const auth_cookie = document.getElementById('opencode-new-cookie')?.value.trim();
+      if (!name || !workspace_id || !auth_cookie) {
+        showProviderAccountEditorError(tr('opencode.required'));
+        return false;
+      }
+      const response = await authFetch(`${API_BASE}/api/opencode/accounts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, workspace_id, auth_cookie, enabled: true }),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        showProviderAccountEditorError(data.error === 'workspace_exists' ? tr('opencode.workspace_exists') : tr('opencode.failed_add'));
+        return false;
+      }
+      await loadOpenCodeAccounts();
+      await renderOpenCodeAccountSettings(bodyEl, config);
+      showToast(tr('settings.saved'), 'success');
+      return true;
+    },
+  });
+}
+
+function openMiniMaxAccountCreateDialog() {
+  openProviderAccountEditor({
+    title: tr('minimax.add_account'),
+    focusSelector: '#minimax-new-name',
+    bodyHTML: `<div class="settings-fields">
+      <div class="settings-field"><label for="minimax-new-name">${tr('minimax.account_name')}</label><input type="text" id="minimax-new-name" class="settings-input" placeholder="${tr('minimax.name_placeholder')}" /></div>
+      <div class="settings-field"><label for="minimax-new-key">${tr('minimax.api_key')}</label><input type="password" id="minimax-new-key" class="settings-input" placeholder="${tr('minimax.key_placeholder')}" autocomplete="new-password" /></div>
+      <div class="settings-field"><label for="minimax-new-region">${tr('minimax.region')}</label><select id="minimax-new-region" class="settings-input"><option value="global">${tr('minimax.global')}</option><option value="cn">${tr('minimax.china')}</option></select></div>
+    </div>`,
+    onSave: async () => {
+      const name = document.getElementById('minimax-new-name')?.value?.trim();
+      const apiKey = document.getElementById('minimax-new-key')?.value?.trim();
+      const region = document.getElementById('minimax-new-region')?.value || 'global';
+      if (!name) {
+        showProviderAccountEditorError(tr('minimax.name_required'));
+        return false;
+      }
+      const response = await authFetch(`${API_BASE}/api/minimax/accounts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, api_key: apiKey, region }),
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        showProviderAccountEditorError(tr('minimax.failed_create', { error: error.error || response.statusText }));
+        return false;
+      }
+      await openProviderSettingsModal('minimax');
+      showToast(tr('settings.saved'), 'success');
+      return true;
+    },
+  });
+}
+
 async function renderOpenCodeAccountSettings(bodyEl, config) {
   bodyEl.innerHTML = `<div class="opencode-modal-accounts">
     <p style="color:var(--text-secondary);font-size:13px;margin:0 0 16px">${tr('opencode.accounts_desc')}</p>
@@ -11053,32 +11199,9 @@ async function renderOpenCodeAccountSettings(bodyEl, config) {
       <button id="opencode-add-account-btn" class="provider-settings-action">+ ${tr('opencode.add_account')}</button>
     </div>
     <div id="opencode-accounts-list">${tr('status.loading')}</div>
-    <div id="opencode-add-form" hidden style="margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--surface-inset)">
-      <div class="settings-fields">
-        <div class="settings-field"><label>${tr('opencode.display_name')}</label><input id="opencode-new-name" class="settings-input" maxlength="80" placeholder="${tr('opencode.name_placeholder')}" /></div>
-        <div class="settings-field"><label>${tr('opencode.workspace_id')}</label><input id="opencode-new-workspace" class="settings-input" maxlength="256" placeholder="${tr('opencode.workspace_placeholder')}" /><span class="settings-field-hint">${tr('opencode.workspace_hint')}</span></div>
-        <div class="settings-field"><label>${tr('opencode.auth_cookie')}</label><input id="opencode-new-cookie" type="password" class="settings-input" autocomplete="new-password" placeholder="${tr('opencode.cookie_placeholder')}" /><span class="settings-field-hint">${tr('opencode.cookie_source_hint')}</span></div>
-      </div>
-      <div style="display:flex;gap:8px;margin-top:8px"><button id="opencode-save-new" class="provider-settings-action">${tr('settings.save')}</button><button id="opencode-cancel-new" class="provider-settings-action">${tr('settings.cancel')}</button></div>
-    </div>
   </div>`;
   const addButton = document.getElementById('opencode-add-account-btn');
-  const addForm = document.getElementById('opencode-add-form');
-  addButton?.addEventListener('click', () => { addForm.hidden = false; addButton.hidden = true; });
-  document.getElementById('opencode-cancel-new')?.addEventListener('click', () => { addForm.hidden = true; addButton.hidden = false; });
-  document.getElementById('opencode-save-new')?.addEventListener('click', async () => {
-    const name = document.getElementById('opencode-new-name')?.value.trim();
-    const workspace_id = document.getElementById('opencode-new-workspace')?.value.trim();
-    const auth_cookie = document.getElementById('opencode-new-cookie')?.value.trim();
-    if (!name || !workspace_id || !auth_cookie) { alert(tr('opencode.required')); return; }
-    const res = await authFetch(`${API_BASE}/api/opencode/accounts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, workspace_id, auth_cookie, enabled: true }) });
-    if (res.ok) { await loadOpenCodeAccounts(); await openProviderSettingsModal('opencode'); }
-    else {
-      const data = await res.json().catch(() => ({}));
-      const message = data.error === 'workspace_exists' ? tr('opencode.workspace_exists') : tr('opencode.failed_add');
-      showToast(message, 'error');
-    }
-  });
+  addButton?.addEventListener('click', () => openOpenCodeAccountCreateDialog(bodyEl, config));
 
   const list = document.getElementById('opencode-accounts-list');
   try {
@@ -11087,9 +11210,9 @@ async function renderOpenCodeAccountSettings(bodyEl, config) {
     const accounts = Array.isArray(data.accounts) ? data.accounts : [];
     if (!accounts.length) { list.innerHTML = `<p class="empty-state">${tr('opencode.no_accounts')}</p>`; return; }
     list.innerHTML = accounts.map(account => `<div class="opencode-account-item" data-account-id="${account.account_id}" style="padding:10px 0;border-bottom:1px solid var(--border-light)">
-      <div class="opencode-account-view" style="display:flex;align-items:center;justify-content:space-between;gap:12px">
-        <div><div style="font-weight:500">${escapeHtml(account.name)}</div><div style="font-size:12px;color:var(--text-secondary)">${escapeHtml(account.workspace_id)} - ${translatedAuthStatus(account.auth_status)} - ${account.has_auth_cookie ? tr('opencode.cookie_configured') : tr('opencode.cookie_missing')}</div></div>
-        <div style="display:flex;gap:6px"><button data-action="edit" class="provider-settings-action">${tr('common.edit')}</button><button data-action="toggle" class="provider-settings-action">${account.enabled ? tr('opencode.disable') : tr('settings.enable')}</button><button data-action="delete" class="provider-settings-action">${tr('common.delete')}</button></div>
+      <div class="opencode-account-view">
+        <div class="opencode-account-summary"><div style="font-weight:500">${escapeHtml(account.name)}</div><div class="opencode-account-meta" style="font-size:12px;color:var(--text-secondary)" title="${escapeHtml(account.workspace_id)}">${escapeHtml(account.workspace_id)} - ${translatedAuthStatus(account.auth_status)} - ${account.has_auth_cookie ? tr('opencode.cookie_configured') : tr('opencode.cookie_missing')}</div></div>
+        <div class="opencode-account-actions"><button data-action="edit" class="provider-settings-action">${tr('common.edit')}</button><button data-action="toggle" class="provider-settings-action">${account.enabled ? tr('opencode.disable') : tr('settings.enable')}</button><button data-action="delete" class="provider-settings-action">${tr('common.delete')}</button></div>
       </div>
       <div class="opencode-account-edit" hidden>
         <div class="settings-fields"><input data-field="name" class="settings-input" value="${escapeHtml(account.name)}" maxlength="80"><input data-field="workspace" class="settings-input" value="${escapeHtml(account.workspace_id)}" maxlength="256"><input data-field="cookie" type="password" class="settings-input" autocomplete="new-password" placeholder="${tr('opencode.cookie_hint')}"></div>
@@ -11263,46 +11386,13 @@ async function openProviderSettingsModal(providerKey) {
     accountsHTML += `<button id="minimax-add-account-btn" style="padding:4px 12px;font-size:12px;background:var(--md-primary,#6750a4);color:#fff;border:none;border-radius:4px;cursor:pointer">+ ${tr('minimax.add_account')}</button>`;
     accountsHTML += '</div>';
     accountsHTML += `<div id="minimax-accounts-list">${tr('status.loading')}</div>`;
-    accountsHTML += '<div id="minimax-add-form" hidden style="margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--surface-inset)">';
-    accountsHTML += '<div class="settings-fields">';
-    accountsHTML += `<div class="settings-field"><label for="minimax-new-name">${tr('minimax.account_name')}</label><input type="text" id="minimax-new-name" class="settings-input" placeholder="${tr('minimax.name_placeholder')}" /></div>`;
-    accountsHTML += `<div class="settings-field"><label for="minimax-new-key">${tr('minimax.api_key')}</label><input type="password" id="minimax-new-key" class="settings-input" placeholder="${tr('minimax.key_placeholder')}" autocomplete="off" /></div>`;
-    accountsHTML += `<div class="settings-field"><label for="minimax-new-region">${tr('minimax.region')}</label><select id="minimax-new-region" class="settings-input"><option value="global">${tr('minimax.global')}</option><option value="cn">${tr('minimax.china')}</option></select></div>`;
-    accountsHTML += '</div>';
-    accountsHTML += '<div style="display:flex;gap:8px;margin-top:8px">';
-    accountsHTML += `<button id="minimax-save-new-btn" style="padding:4px 12px;font-size:12px;background:var(--md-primary,#6750a4);color:#fff;border:none;border-radius:4px;cursor:pointer">${tr('common.save')}</button>`;
-    accountsHTML += `<button id="minimax-cancel-new-btn" style="padding:4px 12px;font-size:12px;background:var(--surface-inset);border:1px solid var(--border);border-radius:4px;cursor:pointer">${tr('common.cancel')}</button>`;
-    accountsHTML += '</div></div>';
     accountsHTML += '</div>';
 
     bodyEl.innerHTML = accountsHTML;
 
-    // Wire add button
+    // Account creation is persisted immediately from the nested editor.
     const addBtn = document.getElementById('minimax-add-account-btn');
-    const addForm = document.getElementById('minimax-add-form');
-    if (addBtn && addForm) {
-      addBtn.addEventListener('click', () => { addForm.hidden = false; addBtn.hidden = true; });
-      document.getElementById('minimax-cancel-new-btn')?.addEventListener('click', () => { addForm.hidden = true; addBtn.hidden = false; });
-      document.getElementById('minimax-save-new-btn')?.addEventListener('click', async () => {
-        const name = document.getElementById('minimax-new-name')?.value?.trim();
-        const apiKey = document.getElementById('minimax-new-key')?.value?.trim();
-        const region = document.getElementById('minimax-new-region')?.value || 'global';
-        if (!name) { alert(tr('minimax.name_required')); return; }
-        try {
-          const res = await authFetch(`${API_BASE}/api/minimax/accounts`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, api_key: apiKey, region }),
-          });
-          if (res.ok) {
-            await openProviderSettingsModal('minimax');
-          } else {
-            const err = await res.json().catch(() => ({}));
-            alert(tr('minimax.failed_create', { error: err.error || res.statusText }));
-          }
-        } catch (e) { alert(tr('minimax.failed_create', { error: e.message })); }
-      });
-    }
+    addBtn?.addEventListener('click', openMiniMaxAccountCreateDialog);
 
     // Fetch and render accounts
     const accountsList = document.getElementById('minimax-accounts-list');
@@ -11418,6 +11508,7 @@ async function openProviderSettingsModal(providerKey) {
 }
 
 function closeProviderSettingsModal() {
+  closeProviderAccountEditor();
   const modal = document.getElementById('provider-settings-modal');
   if (modal) modal.hidden = true;
 }
@@ -11522,7 +11613,8 @@ function setupProviderSettingsModal() {
 
   // Close on Escape
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !modal.hidden) closeProviderSettingsModal();
+    const accountEditor = document.getElementById('provider-account-editor-modal');
+    if (e.key === 'Escape' && !modal.hidden && (accountEditor?.hidden ?? true)) closeProviderSettingsModal();
   });
 }
 
@@ -11711,85 +11803,127 @@ function gatherSettings() {
   return settings;
 }
 
-function setupSettingsSave() {
-  const saveBtn = document.getElementById('settings-save-btn');
-  const feedback = document.getElementById('settings-feedback');
-  if (!saveBtn) return;
+let settingsAutoSaveTimer = null;
+let settingsAutoSaveInFlight = false;
+let settingsAutoSaveQueued = false;
 
-  saveBtn.addEventListener('click', async () => {
-    saveBtn.disabled = true;
-    saveBtn.textContent = tr('settings.saving');
-    if (feedback) { feedback.hidden = true; }
-
-    const settings = gatherSettings();
-
-    // Client-side validation
-    if (settings.notifications) {
-      if (settings.notifications.warning_threshold >= settings.notifications.critical_threshold) {
-        showSettingsFeedback(feedback, tr('settings.threshold_order'), 'error');
-        saveBtn.disabled = false;
-        saveBtn.innerHTML = settingsSaveButtonHTML();
-        return;
-      }
-    }
-    if (settings.menubar) {
-      if (settings.menubar.warning_percent >= settings.menubar.critical_percent) {
-        showSettingsFeedback(feedback, tr('settings.menubar_threshold_order'), 'error');
-        saveBtn.disabled = false;
-        saveBtn.innerHTML = settingsSaveButtonHTML();
-        return;
-      }
-    }
-    if (!Number.isInteger(settings.poll_interval_seconds)
-        || settings.poll_interval_seconds < 10
-        || settings.poll_interval_seconds > 3600) {
-      showSettingsFeedback(feedback, tr('settings.poll_interval_invalid'), 'error');
-      saveBtn.disabled = false;
-      saveBtn.innerHTML = settingsSaveButtonHTML();
-      return;
-    }
-
-    try {
-      const resp = await authFetch('/api/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(settings),
-      });
-      const data = await resp.json();
-      if (!resp.ok) {
-        showSettingsFeedback(feedback, data.error || tr('settings.save_failed'), 'error');
-      } else {
-        if (Object.prototype.hasOwnProperty.call(data, 'timezone')) {
-          activeTimezone = normalizeTz(data.timezone || '');
-          const tzSelect = document.getElementById('settings-timezone');
-          if (tzSelect) {
-            ensureTimezoneOption(tzSelect, activeTimezone);
-            tzSelect.value = activeTimezone;
-          }
-          updateBrowserDefaultTimezoneText();
-          refreshTimezoneSensitiveText();
-        }
-        if (data.provider_visibility) State.providerVisibility = data.provider_visibility;
-        if (data.api_integrations_visibility) State.apiIntegrationsVisibility = data.api_integrations_visibility;
-        if (Array.isArray(data.dashboard_providers_order)) {
-          State.dashboardProvidersOrder = data.dashboard_providers_order.slice();
-        }
-        if (data.dashboard_provider_labels && typeof data.dashboard_provider_labels === 'object') {
-          State.dashboardProviderLabels = { ...data.dashboard_provider_labels };
-        }
-        showSettingsFeedback(feedback, data.restart_required ? tr('settings.saved_restart') : tr('settings.saved_reload'), 'success');
-      }
-    } catch (e) {
-      showSettingsFeedback(feedback, tr('common.network_error'), 'error');
-    } finally {
-      saveBtn.disabled = false;
-      saveBtn.innerHTML = settingsSaveButtonHTML();
-    }
-  });
+function clearTransientSettingsSecrets(settings) {
+  const password = document.getElementById('smtp-password');
+  const submittedPassword = settings?.smtp?.password || '';
+  if (!password || !submittedPassword || password.value !== submittedPassword) return;
+  password.value = '';
+  password.setAttribute('data-i18n-placeholder', 'settings.saved_secret_placeholder');
+  password.placeholder = tr('settings.saved_secret_placeholder');
 }
 
-function settingsSaveButtonHTML() {
-  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg> ${tr('settings.save_settings')}`;
+function validateSettingsForAutoSave(settings, feedback) {
+  if (settings.notifications && settings.notifications.warning_threshold >= settings.notifications.critical_threshold) {
+    showSettingsFeedback(feedback, tr('settings.threshold_order'), 'error');
+    return false;
+  }
+  if (settings.menubar && settings.menubar.warning_percent >= settings.menubar.critical_percent) {
+    showSettingsFeedback(feedback, tr('settings.menubar_threshold_order'), 'error');
+    return false;
+  }
+  if (!Number.isInteger(settings.poll_interval_seconds)
+      || settings.poll_interval_seconds < 10
+      || settings.poll_interval_seconds > 3600) {
+    showSettingsFeedback(feedback, tr('settings.poll_interval_invalid'), 'error');
+    return false;
+  }
+  return true;
+}
+
+function scheduleSettingsAutoSave(delay = 0) {
+  if (!isSettingsPage()) return;
+  if (settingsAutoSaveTimer) clearTimeout(settingsAutoSaveTimer);
+  settingsAutoSaveTimer = setTimeout(() => {
+    settingsAutoSaveTimer = null;
+    saveSettingsAutomatically();
+  }, delay);
+}
+
+async function saveSettingsAutomatically() {
+  const feedback = document.getElementById('settings-feedback');
+  if (settingsAutoSaveInFlight) {
+    settingsAutoSaveQueued = true;
+    return;
+  }
+
+  const settings = gatherSettings();
+  if (!validateSettingsForAutoSave(settings, feedback)) return;
+
+  settingsAutoSaveInFlight = true;
+  if (feedback) {
+    feedback.textContent = tr('settings.saving');
+    feedback.className = 'settings-feedback';
+    feedback.hidden = false;
+  }
+  try {
+    const response = await authFetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      showSettingsFeedback(feedback, data.error || tr('settings.save_failed'), 'error');
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(data, 'timezone')) {
+      activeTimezone = normalizeTz(data.timezone || '');
+      const tzSelect = document.getElementById('settings-timezone');
+      if (tzSelect) {
+        ensureTimezoneOption(tzSelect, activeTimezone);
+        tzSelect.value = activeTimezone;
+      }
+      updateBrowserDefaultTimezoneText();
+      refreshTimezoneSensitiveText();
+    }
+    if (data.provider_visibility) State.providerVisibility = data.provider_visibility;
+    if (data.api_integrations_visibility) State.apiIntegrationsVisibility = data.api_integrations_visibility;
+    if (Array.isArray(data.dashboard_providers_order)) {
+      State.dashboardProvidersOrder = data.dashboard_providers_order.slice();
+    }
+    if (data.dashboard_provider_labels && typeof data.dashboard_provider_labels === 'object') {
+      State.dashboardProviderLabels = { ...data.dashboard_provider_labels };
+    }
+    clearTransientSettingsSecrets(settings);
+    showSettingsFeedback(feedback, data.restart_required ? tr('settings.saved_restart') : tr('settings.saved_live'), 'success');
+  } catch (error) {
+    showSettingsFeedback(feedback, tr('common.network_error'), 'error');
+  } finally {
+    settingsAutoSaveInFlight = false;
+    if (settingsAutoSaveQueued) {
+      settingsAutoSaveQueued = false;
+      scheduleSettingsAutoSave(0);
+    }
+  }
+}
+
+function shouldAutoSaveSettingsTarget(target, eventType) {
+  if (!(target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement)) return false;
+  if (target.closest('#provider-toggles, #provider-settings-modal, #provider-account-editor-modal')) return false;
+  if (target.matches('[data-language-selector], #settings-layout-density, #settings-current-password, #settings-new-password, #settings-confirm-password')) return false;
+  if (eventType === 'input' && target instanceof HTMLInputElement && target.type === 'password') return false;
+  return true;
+}
+
+function setupSettingsAutoSave() {
+  const settingsMain = document.querySelector('.settings-main');
+  if (!settingsMain) return;
+
+  const handleChange = (event) => {
+    if (event.type === 'input' && event.target instanceof HTMLInputElement && event.target.id === 'smtp-password') {
+      if (settingsAutoSaveTimer) clearTimeout(settingsAutoSaveTimer);
+      settingsAutoSaveTimer = null;
+      return;
+    }
+    if (!shouldAutoSaveSettingsTarget(event.target, event.type)) return;
+    scheduleSettingsAutoSave(event.type === 'input' ? 700 : 0);
+  };
+  settingsMain.addEventListener('input', handleChange);
+  settingsMain.addEventListener('change', handleChange);
 }
 
 function showSettingsFeedback(el, msg, type) {
@@ -12271,7 +12405,10 @@ function addOverrideRow(quotaKey, provider, warning, critical, isAbsolute, disab
     _updateOverrideQuotas(row);
   });
 
-  row.querySelector('.override-remove').addEventListener('click', () => row.remove());
+  row.querySelector('.override-remove').addEventListener('click', () => {
+    row.remove();
+    scheduleSettingsAutoSave(0);
+  });
   list.appendChild(row);
 
   // Populate quota options for the selected provider
@@ -12479,9 +12616,6 @@ document.addEventListener('onwatch:languagechange', () => {
     element.textContent = tr('dashboard.no_provider_quota', { provider: element.dataset.emptyProvider });
   });
   setupOverviewControls();
-
-  const settingsSave = document.getElementById('settings-save-btn');
-  if (settingsSave && !settingsSave.disabled) settingsSave.innerHTML = settingsSaveButtonHTML();
 
   const providerModal = document.getElementById('provider-settings-modal');
   if (providerModal && !providerModal.hidden && providerModal.dataset.providerKey) {

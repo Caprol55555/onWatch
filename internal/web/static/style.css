@@ -2834,22 +2834,47 @@ select.settings-input {
 }
 
 /* Provider settings modal - ensure consistent sizing with settings page */
-#provider-settings-modal .settings-field label {
+#provider-settings-modal .settings-field label,
+#provider-account-editor-modal .settings-field label {
   font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
 }
-#provider-settings-modal .settings-input {
+#provider-settings-modal .settings-input,
+#provider-account-editor-modal .settings-input {
   font-size: 13px;
   padding: 8px 12px;
 }
-#provider-settings-modal .settings-field-hint {
+#provider-settings-modal .settings-field-hint,
+#provider-account-editor-modal .settings-field-hint {
   font-size: 11px;
   line-height: 1.4;
   margin-top: 4px;
 }
-#provider-settings-modal .settings-fields {
+#provider-settings-modal .settings-fields,
+#provider-account-editor-modal .settings-fields {
   gap: 16px;
+}
+
+.provider-account-editor-overlay {
+  z-index: 130;
+}
+
+.provider-account-editor-overlay[hidden] {
+  display: none;
+}
+
+.provider-account-editor-content {
+  width: min(92vw, 520px);
+  max-height: min(82vh, 720px);
+}
+
+.provider-account-editor-body {
+  padding: 20px 24px;
+}
+
+#provider-account-editor-feedback {
+  margin: 0 24px 16px;
 }
 
 /* Compact modal footer buttons */
@@ -3107,6 +3132,14 @@ select.settings-input {
 }
 
 /* Save bar */
+.settings-autosave-row {
+  min-height: 0;
+}
+
+.settings-autosave-row .settings-feedback {
+  margin: 12px 0 0;
+}
+
 .settings-save-bar {
   display: flex;
   align-items: center;
@@ -4264,6 +4297,32 @@ body.accounts-overview-mode #sessions-section {
   border: 1px solid var(--border);
   border-radius: 6px;
   cursor: pointer;
+  white-space: nowrap;
+}
+
+.opencode-account-view {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.opencode-account-summary {
+  min-width: 0;
+}
+
+.opencode-account-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.opencode-account-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+  gap: 6px;
+  white-space: nowrap;
 }
 
 .account-overview-badge[data-auth-status="needs_reauth"],

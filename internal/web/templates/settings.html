@@ -38,6 +38,9 @@
             <button class="settings-tab" data-tab="menubar" role="tab" aria-selected="false" aria-controls="panel-menubar" hidden data-i18n="settings.menubar_tab">Menubar</button>
             <button class="settings-tab" data-tab="general" role="tab" aria-selected="false" aria-controls="panel-general" data-i18n="settings.general_tab">General</button>
         </div>
+        <div class="settings-autosave-row">
+            <div id="settings-feedback" class="settings-feedback" role="status" aria-live="polite" hidden></div>
+        </div>
 
         <!-- Email (SMTP) Panel -->
         <div class="settings-panel active" id="panel-email" role="tabpanel">
@@ -255,6 +258,29 @@
             </div>
         </div>
 
+        <!-- Nested provider account editor -->
+        <div class="modal-overlay provider-account-editor-overlay" id="provider-account-editor-modal" role="dialog" aria-modal="true" aria-labelledby="provider-account-editor-title" hidden>
+            <div class="modal-content provider-account-editor-content">
+                <header class="modal-header">
+                    <h2 class="modal-title" id="provider-account-editor-title"></h2>
+                    <button class="modal-close" id="provider-account-editor-close" aria-label="Close modal" data-i18n-aria-label="a11y.close_modal">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M18 6L6 18M6 6l12 12"/>
+                        </svg>
+                    </button>
+                </header>
+                <div id="provider-account-editor-body" class="provider-account-editor-body"></div>
+                <div id="provider-account-editor-feedback" class="settings-feedback provider-account-editor-feedback" role="status" aria-live="polite" hidden></div>
+                <div class="modal-footer">
+                    <button class="modal-footer-btn modal-footer-btn-secondary" id="provider-account-editor-cancel" type="button" data-i18n="settings.cancel">Cancel</button>
+                    <button class="modal-footer-btn modal-footer-btn-primary" id="provider-account-editor-save" type="button">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                        <span data-i18n="settings.save">Save</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+
         <!-- Menubar Panel -->
         <div class="settings-panel" id="panel-menubar" role="tabpanel" hidden>
             <div class="settings-section menubar-section" id="menubar-settings-shell" hidden>
@@ -423,14 +449,6 @@
             </div>
         </div>
 
-        <!-- Global save bar -->
-        <div class="settings-save-bar">
-            <div id="settings-feedback" class="settings-feedback" hidden></div>
-            <button class="settings-save-btn" id="settings-save-btn" type="button">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
-                <span data-i18n="settings.save_settings">Save Settings</span>
-            </button>
-        </div>
     </main>
 
     <footer class="app-footer">
