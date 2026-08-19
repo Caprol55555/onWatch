@@ -8,7 +8,7 @@
                 </svg>
             </a>
             <div>
-                <h1 class="settings-title"><span data-i18n="settings.title">Settings</span> <span class="beta-tag" data-i18n="settings.beta">Beta</span></h1>
+                <h1 class="settings-title"><span data-i18n="settings.title">Settings</span></h1>
                 <p class="settings-subtitle" data-i18n="settings.subtitle">Configure notifications, providers, and preferences</p>
             </div>
         </div>
@@ -33,6 +33,7 @@
         <div class="settings-tabs" role="tablist" aria-label="Settings sections" data-i18n-aria-label="a11y.settings_sections">
             <button class="settings-tab active" data-tab="email" role="tab" aria-selected="true" aria-controls="panel-email" data-i18n="settings.email_tab">Email (SMTP)</button>
             <button class="settings-tab" data-tab="notifications" role="tab" aria-selected="false" aria-controls="panel-notifications" data-i18n="settings.notifications_tab">Notifications</button>
+            <button class="settings-tab" data-tab="dashboard" role="tab" aria-selected="false" aria-controls="panel-dashboard" data-i18n="settings.dashboard_tab">Dashboard</button>
             <button class="settings-tab" data-tab="providers" role="tab" aria-selected="false" aria-controls="panel-providers" data-i18n="settings.providers_tab">Providers</button>
             <button class="settings-tab" data-tab="menubar" role="tab" aria-selected="false" aria-controls="panel-menubar" hidden data-i18n="settings.menubar_tab">Menubar</button>
             <button class="settings-tab" data-tab="general" role="tab" aria-selected="false" aria-controls="panel-general" data-i18n="settings.general_tab">General</button>
@@ -209,14 +210,17 @@
             </div>
         </div>
 
-        <!-- Providers Panel -->
-        <div class="settings-panel" id="panel-providers" role="tabpanel" hidden>
+        <!-- Dashboard Panel -->
+        <div class="settings-panel" id="panel-dashboard" role="tabpanel" hidden>
             <div class="settings-section">
                 <h3 class="settings-section-title" data-i18n="settings.dashboard_tabs">Dashboard Tabs</h3>
                 <p class="settings-section-desc" data-i18n="settings.dashboard_tabs_desc">Only providers with Dashboard enabled appear here. Drag the handle (or use ↑/↓) to reorder tabs. Use the Tab name field to rename; leave blank for the default name.</p>
                 <ul class="dashboard-tab-order-list" id="dashboard-tab-order" aria-label="仪表盘服务商标签顺序和名称" data-i18n-aria-label="a11y.dashboard_tab_order"></ul>
             </div>
-            <div class="settings-divider"></div>
+        </div>
+
+        <!-- Providers Panel -->
+        <div class="settings-panel" id="panel-providers" role="tabpanel" hidden>
             <div class="settings-section">
                 <h3 class="settings-section-title" data-i18n="settings.provider_controls">Provider Controls</h3>
                 <p class="settings-section-desc" data-i18n="settings.provider_controls_desc">Manage telemetry and dashboard visibility for each provider. Hidden providers remain accessible under the All tab.</p>
@@ -311,6 +315,18 @@
 
         <!-- General Panel -->
         <div class="settings-panel" id="panel-general" role="tabpanel" hidden>
+            <div class="settings-section">
+                <h3 class="settings-section-title" data-i18n="settings.poll_interval">Quota Check Interval</h3>
+                <p class="settings-section-desc" data-i18n="settings.poll_interval_desc">Set how often all enabled providers are checked. The new interval takes effect after restarting onWatch.</p>
+                <div class="settings-fields">
+                    <div class="settings-field">
+                        <label for="settings-poll-interval" data-i18n="settings.poll_interval_seconds">Interval (seconds)</label>
+                        <input type="number" id="settings-poll-interval" class="settings-input" min="10" max="3600" step="10" value="120" required>
+                        <span class="settings-field-hint" data-i18n="settings.poll_interval_hint">Allowed range: 10-3600 seconds. 120 seconds is recommended.</span>
+                    </div>
+                </div>
+            </div>
+            <div class="settings-divider"></div>
             <div class="settings-section">
                 <h3 class="settings-section-title" data-i18n="settings.language">Language</h3>
                 <p class="settings-section-desc" data-i18n="settings.language_desc">Choose the dashboard language. This preference is saved in this browser.</p>

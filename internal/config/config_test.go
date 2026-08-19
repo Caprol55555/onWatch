@@ -417,6 +417,38 @@ func TestConfig_ValidatesInterval_Maximum(t *testing.T) {
 	}
 }
 
+func TestApplyStoredPollInterval(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		raw     string
+		want    time.Duration
+		wantErr bool
+	}{
+		{name: "unset keeps current", raw: "", want: 120 * time.Second},
+		{name: "valid override", raw: "300", want: 300 * time.Second},
+		{name: "minimum", raw: "10", want: 10 * time.Second},
+		{name: "maximum", raw: "3600", want: 3600 * time.Second},
+		{name: "not integer", raw: "abc", want: 120 * time.Second, wantErr: true},
+		{name: "too low", raw: "9", want: 120 * time.Second, wantErr: true},
+		{name: "too high", raw: "3601", want: 120 * time.Second, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{PollInterval: 120 * time.Second}
+			err := ApplyStoredPollInterval(cfg, tt.raw)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ApplyStoredPollInterval() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if cfg.PollInterval != tt.want {
+				t.Fatalf("PollInterval = %v, want %v", cfg.PollInterval, tt.want)
+			}
+		})
+	}
+}
+
 func TestConfig_ValidatesPort_Range(t *testing.T) {
 	tests := []struct {
 		name   string

@@ -95,6 +95,60 @@ func TestLanguageSelectorsAvailableOnEveryPage(t *testing.T) {
 	}
 }
 
+func TestSettingsNavigationSeparatesDashboardAndProviders(t *testing.T) {
+	t.Parallel()
+
+	settings := readEmbeddedFile(t, "templates/settings.html")
+	if strings.Contains(settings, `class="beta-tag"`) {
+		t.Fatal("Settings title must not display the Beta badge")
+	}
+	for _, marker := range []string{
+		`data-tab="dashboard"`,
+		`id="panel-dashboard"`,
+		`data-i18n="settings.dashboard_tab"`,
+		`data-tab="providers"`,
+		`id="panel-providers"`,
+	} {
+		if !strings.Contains(settings, marker) {
+			t.Errorf("settings navigation missing %s", marker)
+		}
+	}
+
+	dashboardStart := strings.Index(settings, `id="panel-dashboard"`)
+	providersStart := strings.Index(settings, `id="panel-providers"`)
+	if dashboardStart < 0 || providersStart < 0 || dashboardStart >= providersStart {
+		t.Fatal("Dashboard panel must precede the Providers panel")
+	}
+	dashboardPanel := settings[dashboardStart:providersStart]
+	if !strings.Contains(dashboardPanel, `id="dashboard-tab-order"`) || strings.Contains(dashboardPanel, `id="provider-toggles"`) {
+		t.Fatal("Dashboard panel must contain only dashboard ordering controls")
+	}
+	providersPanel := settings[providersStart:]
+	if !strings.Contains(providersPanel, `id="provider-toggles"`) {
+		t.Fatal("Providers panel must contain provider controls")
+	}
+}
+
+func TestSettingsExposePersistedPollInterval(t *testing.T) {
+	t.Parallel()
+
+	settings := readEmbeddedFile(t, "templates/settings.html")
+	if !strings.Contains(settings, `id="settings-poll-interval"`) {
+		t.Fatal("General settings must expose the quota polling interval")
+	}
+
+	appJS := readStaticAppJS(t)
+	for _, marker := range []string{
+		"setVal('settings-poll-interval', data.poll_interval_seconds)",
+		"settings.poll_interval_seconds = parseInt(pollInterval.value, 10)",
+		"tr('settings.saved_restart')",
+	} {
+		if !strings.Contains(appJS, marker) {
+			t.Errorf("poll interval UI integration missing %q", marker)
+		}
+	}
+}
+
 func TestTemplatesUseStableTranslationKeys(t *testing.T) {
 	t.Parallel()
 

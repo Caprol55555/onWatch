@@ -3635,6 +3635,77 @@ func TestHandler_AutoRefreshTokensSetting(t *testing.T) {
 	}
 }
 
+func TestHandler_PollIntervalSetting(t *testing.T) {
+	t.Parallel()
+	s, _ := store.New(":memory:")
+	defer s.Close()
+
+	cfg := createTestConfigWithSynthetic()
+	cfg.PollInterval = 120 * time.Second
+	h := NewHandler(s, nil, nil, nil, cfg)
+
+	get := func() map[string]interface{} {
+		req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+		rr := httptest.NewRecorder()
+		h.GetSettings(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("GET status %d: %s", rr.Code, rr.Body.String())
+		}
+		var got map[string]interface{}
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode GET: %v", err)
+		}
+		return got
+	}
+
+	if got := get()["poll_interval_seconds"]; got != float64(120) {
+		t.Fatalf("default poll_interval_seconds = %v, want 120", got)
+	}
+
+	req := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(`{"poll_interval_seconds":300}`))
+	rr := httptest.NewRecorder()
+	h.UpdateSettings(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("PUT status %d: %s", rr.Code, rr.Body.String())
+	}
+	var updated map[string]interface{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &updated); err != nil {
+		t.Fatalf("decode PUT: %v", err)
+	}
+	if updated["restart_required"] != true {
+		t.Fatalf("restart_required = %v, want true", updated["restart_required"])
+	}
+	if saved, _ := s.GetSetting(store.SettingPollIntervalSeconds); saved != "300" {
+		t.Fatalf("stored interval = %q, want 300", saved)
+	}
+	if got := get()["poll_interval_seconds"]; got != float64(300) {
+		t.Fatalf("saved poll_interval_seconds = %v, want 300", got)
+	}
+}
+
+func TestHandler_PollIntervalSettingRejectsInvalidValues(t *testing.T) {
+	t.Parallel()
+
+	for _, body := range []string{
+		`{"poll_interval_seconds":9}`,
+		`{"poll_interval_seconds":3601}`,
+		`{"poll_interval_seconds":1.5}`,
+		`{"poll_interval_seconds":"120"}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			s, _ := store.New(":memory:")
+			defer s.Close()
+			h := NewHandler(s, nil, nil, nil, createTestConfigWithSynthetic())
+			req := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body))
+			rr := httptest.NewRecorder()
+			h.UpdateSettings(rr, req)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body: %s", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
 func TestHandler_UpdateSettings_InvalidTimezone(t *testing.T) {
 	t.Parallel()
 	s, _ := store.New(":memory:")

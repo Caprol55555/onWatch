@@ -46,3 +46,18 @@ func TestAppJS_OpenCodeAllAccountsUsesLatestOnlySummary(t *testing.T) {
 		t.Fatal("OpenCode all-account cards must display each account authentication status")
 	}
 }
+
+func TestAppJS_OpenCodeQuotasUseCanonicalDisplayOrder(t *testing.T) {
+	t.Parallel()
+
+	appJS := readStaticAppJS(t)
+	if !strings.Contains(appJS, "function sortOpenCodeQuotas(quotas)") {
+		t.Fatal("OpenCode quota rendering must use a shared canonical ordering helper")
+	}
+	if !strings.Contains(appJS, "sortOpenCodeQuotas(quotas).map((q, i) =>") {
+		t.Fatal("OpenCode detail cards must render quotas in canonical order")
+	}
+	if !strings.Contains(appJS, "sortOpenCodeQuotas(account.quotas || []).map(q =>") {
+		t.Fatal("OpenCode all-account summaries must render quotas in canonical order")
+	}
+}

@@ -6592,6 +6592,10 @@ func (h *Handler) GetSettings(w http.ResponseWriter, r *http.Request) {
 	tz := ""
 	var hiddenInsights []string
 	menubarSettings := menubar.DefaultSettings()
+	pollIntervalSeconds := 120
+	if h.config != nil && h.config.PollInterval > 0 {
+		pollIntervalSeconds = int(h.config.PollInterval / time.Second)
+	}
 	if h.store != nil {
 		val, err := h.store.GetSetting("timezone")
 		if err != nil {
@@ -6610,6 +6614,15 @@ func (h *Handler) GetSettings(w http.ResponseWriter, r *http.Request) {
 		} else if settings != nil {
 			menubarSettings = settings
 		}
+		if val, err := h.store.GetSetting(store.SettingPollIntervalSeconds); err != nil {
+			h.logger.Error("failed to get polling interval setting", "error", err)
+		} else if val != "" {
+			if seconds, parseErr := strconv.Atoi(val); parseErr == nil {
+				if _, validateErr := config.PollIntervalFromSeconds(seconds); validateErr == nil {
+					pollIntervalSeconds = seconds
+				}
+			}
+		}
 	}
 	if hiddenInsights == nil {
 		hiddenInsights = []string{}
@@ -6622,10 +6635,11 @@ func (h *Handler) GetSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result := map[string]interface{}{
-		"timezone":            tz,
-		"hidden_insights":     hiddenInsights,
-		"menubar":             menubarSettings,
-		"auto_refresh_tokens": autoRefreshTokens,
+		"timezone":              tz,
+		"hidden_insights":       hiddenInsights,
+		"menubar":               menubarSettings,
+		"auto_refresh_tokens":   autoRefreshTokens,
+		"poll_interval_seconds": pollIntervalSeconds,
 	}
 
 	// SMTP settings (never return the actual password)
@@ -6723,6 +6737,31 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result := map[string]interface{}{}
+
+	// Handle the global provider quota polling interval. Agents use fixed,
+	// bounded tickers, so the new value is applied safely on the next restart.
+	if raw, ok := body["poll_interval_seconds"]; ok {
+		var seconds int
+		if err := json.Unmarshal(raw, &seconds); err != nil {
+			respondError(w, http.StatusBadRequest, "invalid poll_interval_seconds value")
+			return
+		}
+		if _, err := config.PollIntervalFromSeconds(seconds); err != nil {
+			respondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := h.store.SetSetting(store.SettingPollIntervalSeconds, strconv.Itoa(seconds)); err != nil {
+			h.logger.Error("failed to save polling interval setting", "error", err)
+			respondError(w, http.StatusInternalServerError, "failed to save setting")
+			return
+		}
+		currentSeconds := 0
+		if h.config != nil {
+			currentSeconds = int(h.config.PollInterval / time.Second)
+		}
+		result["poll_interval_seconds"] = seconds
+		result["restart_required"] = currentSeconds != seconds
+	}
 
 	// Handle timezone
 	if raw, ok := body["timezone"]; ok {
@@ -9330,7 +9369,7 @@ func (h *Handler) minimaxAccountsList(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusOK, map[string]interface{}{"accounts": []interface{}{}})
 		return
 	}
-	accounts, err := h.store.QueryProviderAccounts("minimax")
+	accounts, err := h.store.QueryActiveProviderAccounts("minimax")
 	if err != nil {
 		h.logger.Error("failed to query MiniMax accounts", "error", err)
 		respondError(w, http.StatusInternalServerError, "failed to query accounts")
@@ -9352,9 +9391,6 @@ func (h *Handler) minimaxAccountsList(w http.ResponseWriter, r *http.Request) {
 					entry["region"] = r
 				}
 			}
-		}
-		if acc.DeletedAt != nil {
-			entry["deletedAt"] = acc.DeletedAt.Format(time.RFC3339)
 		}
 		result = append(result, entry)
 	}

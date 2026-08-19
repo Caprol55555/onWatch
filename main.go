@@ -712,6 +712,16 @@ func run() error {
 		logger.Warn("Failed to initialize encryption salt", "error", err)
 	}
 
+	// UI-configured polling interval is persisted in SQLite and takes effect on
+	// process startup so every provider agent receives the same bounded value.
+	if raw, settingErr := db.GetSetting(store.SettingPollIntervalSeconds); settingErr != nil {
+		logger.Warn("Failed to load polling interval setting", "error", settingErr)
+	} else if applyErr := config.ApplyStoredPollInterval(cfg, raw); applyErr != nil {
+		logger.Warn("Ignoring invalid polling interval setting", "error", applyErr)
+	} else if raw != "" {
+		logger.Info("Applied database polling interval", "interval", cfg.PollInterval)
+	}
+
 	// Password precedence: DB-stored hash takes priority over .env
 	dbHash, hashErr := db.GetUser(cfg.AdminUser)
 	if hashErr == nil && dbHash != "" {

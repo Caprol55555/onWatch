@@ -87,12 +87,12 @@ func TestBuildMiniMaxCurrent_SharedQuota(t *testing.T) {
 	var resp struct {
 		SharedQuota bool `json:"sharedQuota"`
 		Quotas      []struct {
-			Name         string   `json:"name"`
-			DisplayName  string   `json:"displayName"`
-			Used         int      `json:"used"`
-			Remaining    int      `json:"remaining"`
-			Total        int      `json:"total"`
-			UsagePercent float64  `json:"usagePercent"`
+			Name         string  `json:"name"`
+			DisplayName  string  `json:"displayName"`
+			Used         int     `json:"used"`
+			Remaining    int     `json:"remaining"`
+			Total        int     `json:"total"`
+			UsagePercent float64 `json:"usagePercent"`
 		} `json:"quotas"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
@@ -624,7 +624,7 @@ func TestMiniMaxAccounts_Delete(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// Verify deletion (soft-delete - should still appear in list with deletedAt)
+	// Verify the soft-deleted account disappears from the management list.
 	req = httptest.NewRequest("GET", "/api/minimax/accounts", nil)
 	w = httptest.NewRecorder()
 	h.MiniMaxAccounts(w, req)
@@ -634,10 +634,16 @@ func TestMiniMaxAccounts_Delete(t *testing.T) {
 	for _, a := range listResp["accounts"].([]interface{}) {
 		acc := a.(map[string]interface{})
 		if formatID(acc["id"]) == formatID(id) {
-			if _, hasDeletedAt := acc["deletedAt"]; !hasDeletedAt {
-				t.Error("expected deletedAt to be set after soft-delete")
-			}
+			t.Fatal("deleted MiniMax account must not remain visible in the management list")
 		}
+	}
+
+	stored, err := s.GetProviderAccountByID(int64(id.(float64)))
+	if err != nil {
+		t.Fatalf("GetProviderAccountByID: %v", err)
+	}
+	if stored.DeletedAt == nil {
+		t.Fatal("MiniMax account should remain soft-deleted for historical data integrity")
 	}
 }
 

@@ -4056,6 +4056,16 @@ function updateKimiQuotaCards(quotas, containerId) {
   });
 }
 const opencodeQuotaOrder = ['five_hour', 'weekly', 'monthly'];
+
+function sortOpenCodeQuotas(quotas) {
+  return (Array.isArray(quotas) ? quotas : []).slice().sort((left, right) => {
+    const leftIndex = opencodeQuotaOrder.indexOf(left && left.name);
+    const rightIndex = opencodeQuotaOrder.indexOf(right && right.name);
+    const leftRank = leftIndex < 0 ? opencodeQuotaOrder.length : leftIndex;
+    const rightRank = rightIndex < 0 ? opencodeQuotaOrder.length : rightIndex;
+    return leftRank - rightRank;
+  });
+}
 const opencodeDisplayNames = {
   five_hour: tr('quota.five_hour'),
   weekly: tr('quota.weekly'),
@@ -4086,7 +4096,7 @@ function renderOpenCodeQuotaCards(quotas, containerId) {
     return;
   }
 
-  container.innerHTML = quotas.map((q, i) => {
+  container.innerHTML = sortOpenCodeQuotas(quotas).map((q, i) => {
     const icon = '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>';
     const displayName = q.displayName || opencodeDisplayNames[q.name] || q.name;
     const displayPct = q.cardPercent != null ? q.cardPercent : (q.utilization || 0);
@@ -4514,7 +4524,7 @@ function accountOverviewQuotas(provider, account) {
     }));
   }
   if (provider === 'opencode') {
-    return (account.quotas || []).map(q => ({
+    return sortOpenCodeQuotas(account.quotas || []).map(q => ({
       label: localizedQuotaLabel(q.name, q.displayName || opencodeDisplayNames[q.name] || q.name),
       quotaName: q.name,
       percent: typeof q.utilization === 'number' ? q.utilization : 0,
@@ -9712,6 +9722,10 @@ async function loadSettings() {
       autoRefresh.checked = data.auto_refresh_tokens !== false;
     }
 
+    if (Number.isInteger(data.poll_interval_seconds)) {
+      setVal('settings-poll-interval', data.poll_interval_seconds);
+    }
+
     // SMTP
     if (data.smtp) {
       const s = data.smtp;
@@ -11659,6 +11673,11 @@ function gatherSettings() {
     settings.auto_refresh_tokens = !!autoRefresh.checked;
   }
 
+  const pollInterval = document.getElementById('settings-poll-interval');
+  if (pollInterval) {
+    settings.poll_interval_seconds = parseInt(pollInterval.value, 10);
+  }
+
   // Global display mode goes under provider_settings.global. Other provider
   // settings (API keys, tokens, etc.) are still saved via the per-provider
   // modal because the server strips sensitive keys from the GET response;
@@ -11721,6 +11740,14 @@ function setupSettingsSave() {
         return;
       }
     }
+    if (!Number.isInteger(settings.poll_interval_seconds)
+        || settings.poll_interval_seconds < 10
+        || settings.poll_interval_seconds > 3600) {
+      showSettingsFeedback(feedback, tr('settings.poll_interval_invalid'), 'error');
+      saveBtn.disabled = false;
+      saveBtn.innerHTML = settingsSaveButtonHTML();
+      return;
+    }
 
     try {
       const resp = await authFetch('/api/settings', {
@@ -11750,7 +11777,7 @@ function setupSettingsSave() {
         if (data.dashboard_provider_labels && typeof data.dashboard_provider_labels === 'object') {
           State.dashboardProviderLabels = { ...data.dashboard_provider_labels };
         }
-        showSettingsFeedback(feedback, tr('settings.saved_reload'), 'success');
+        showSettingsFeedback(feedback, data.restart_required ? tr('settings.saved_restart') : tr('settings.saved_reload'), 'success');
       }
     } catch (e) {
       showSettingsFeedback(feedback, tr('common.network_error'), 'error');

@@ -18,7 +18,40 @@ import (
 const (
 	maxLogFileBytes = 50 * 1024 * 1024
 	maxLogBackups   = 3
+	MinPollInterval = 10 * time.Second
+	MaxPollInterval = 3600 * time.Second
 )
+
+// PollIntervalFromSeconds validates a polling interval shared by CLI, env,
+// persisted settings, and the settings API.
+func PollIntervalFromSeconds(seconds int) (time.Duration, error) {
+	if seconds < int(MinPollInterval/time.Second) {
+		return 0, fmt.Errorf("poll interval must be at least %v", MinPollInterval)
+	}
+	if seconds > int(MaxPollInterval/time.Second) {
+		return 0, fmt.Errorf("poll interval must be at most %v", MaxPollInterval)
+	}
+	return time.Duration(seconds) * time.Second, nil
+}
+
+// ApplyStoredPollInterval applies a validated SQLite-backed override. An empty
+// value keeps the interval selected from CLI, environment, or defaults.
+func ApplyStoredPollInterval(cfg *Config, raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil {
+		return fmt.Errorf("invalid stored poll interval: %w", err)
+	}
+	interval, err := PollIntervalFromSeconds(seconds)
+	if err != nil {
+		return err
+	}
+	cfg.PollInterval = interval
+	return nil
+}
 
 // Config holds all application configuration.
 type Config struct {
@@ -644,13 +677,11 @@ func (c *Config) Validate() error {
 	}
 
 	// Poll interval bounds
-	minInterval := 10 * time.Second
-	maxInterval := 3600 * time.Second
-	if c.PollInterval < minInterval {
-		return fmt.Errorf("poll interval must be at least %v", minInterval)
+	if c.PollInterval < MinPollInterval {
+		return fmt.Errorf("poll interval must be at least %v", MinPollInterval)
 	}
-	if c.PollInterval > maxInterval {
-		return fmt.Errorf("poll interval must be at most %v", maxInterval)
+	if c.PollInterval > MaxPollInterval {
+		return fmt.Errorf("poll interval must be at most %v", MaxPollInterval)
 	}
 
 	// Port range

@@ -1781,6 +1781,9 @@ func (s *Store) QuerySyntheticCycleOverview(groupBy string, limit int) ([]CycleO
 // Setting key for OAuth auto-refresh of coding-harness credentials.
 const SettingAutoRefreshTokens = "auto_refresh_tokens"
 
+// SettingPollIntervalSeconds controls how often provider quotas are polled.
+const SettingPollIntervalSeconds = "poll_interval_seconds"
+
 // GetSetting returns the value for a setting key. Returns "" if not found.
 func (s *Store) GetSetting(key string) (string, error) {
 	var value string

@@ -13,11 +13,11 @@ from page_objects.settings_page import SettingsPage
 class TestSettings:
     """Settings page interaction tests."""
 
-    def test_four_tabs_present(self, settings_page: Page) -> None:
+    def test_five_tabs_present(self, settings_page: Page) -> None:
         """Settings page should expose platform-appropriate visible tabs."""
         sp = SettingsPage(settings_page)
         tabs = sp.get_tab_names()
-        expected = {"Email (SMTP)", "Notifications", "Providers", "General"}
+        expected = {"Email (SMTP)", "Notifications", "Dashboard", "Providers", "General"}
         if platform.system() == "Darwin":
             expected.add("Menubar")
         assert set(tabs) == expected
@@ -95,6 +95,17 @@ class TestSettings:
 
         assert sp.is_panel_visible("providers")
         assert sp.is_provider_toggles_visible()
+
+    def test_dashboard_settings_are_separate_from_providers(self, settings_page: Page) -> None:
+        """Dashboard ordering and provider controls should live in separate tabs."""
+        sp = SettingsPage(settings_page)
+        sp.select_tab("dashboard")
+        expect(settings_page.locator("#dashboard-tab-order")).to_be_visible()
+        expect(settings_page.locator("#provider-toggles")).not_to_be_visible()
+
+        sp.select_tab("providers")
+        expect(settings_page.locator("#provider-toggles")).to_be_visible()
+        expect(settings_page.locator("#dashboard-tab-order")).not_to_be_visible()
 
     def test_menubar_provider_visibility_is_saved_via_global_settings(self, settings_page: Page) -> None:
         """Menubar provider visibility should persist in settings payload."""
