@@ -88,39 +88,41 @@ type MiniMaxAccountReloader interface {
 
 // Handler handles HTTP requests for the web dashboard
 type Handler struct {
-	store              *store.Store
-	tracker            *tracker.Tracker
-	zaiTracker         *tracker.ZaiTracker
-	anthropicTracker   *tracker.AnthropicTracker
-	copilotTracker     *tracker.CopilotTracker
-	codexTracker       *tracker.CodexTracker
-	antigravityTracker *tracker.AntigravityTracker
-	minimaxTracker     *tracker.MiniMaxTracker
-	geminiTracker      *tracker.GeminiTracker
-	openrouterTracker  *tracker.OpenRouterTracker
-	moonshotTracker    *tracker.MoonshotTracker
-	deepseekTracker    *tracker.DeepSeekTracker
-	cursorTracker      *tracker.CursorTracker
-	grokTracker        *tracker.GrokTracker
-	kimiTracker        *tracker.KimiTracker
-	opencodeTracker    *tracker.OpenCodeTracker
-	updater            *update.Updater
-	notifier           Notifier
-	agentManager       ProviderAgentController
-	minimaxAgentMgr    MiniMaxAccountReloader
-	logger             *slog.Logger
-	dashboardTmpl      *template.Template
-	loginTmpl          *template.Template
-	settingsTmpl       *template.Template
-	sessions           *SessionStore
-	config             *config.Config
-	metrics            *metrics.Metrics
-	version            string
-	smtpTestMu         sync.Mutex
-	smtpTestLastSent   time.Time
-	pushTestMu         sync.Mutex
-	pushTestLastSent   time.Time
-	rateLimiter        *LoginRateLimiter // Per-IP rate limiting for login attempts
+	store                  *store.Store
+	tracker                *tracker.Tracker
+	zaiTracker             *tracker.ZaiTracker
+	anthropicTracker       *tracker.AnthropicTracker
+	copilotTracker         *tracker.CopilotTracker
+	codexTracker           *tracker.CodexTracker
+	antigravityTracker     *tracker.AntigravityTracker
+	minimaxTracker         *tracker.MiniMaxTracker
+	geminiTracker          *tracker.GeminiTracker
+	openrouterTracker      *tracker.OpenRouterTracker
+	moonshotTracker        *tracker.MoonshotTracker
+	deepseekTracker        *tracker.DeepSeekTracker
+	cursorTracker          *tracker.CursorTracker
+	grokTracker            *tracker.GrokTracker
+	kimiTracker            *tracker.KimiTracker
+	opencodeTracker        *tracker.OpenCodeTracker
+	updater                *update.Updater
+	notifier               Notifier
+	agentManager           ProviderAgentController
+	minimaxAgentMgr        MiniMaxAccountReloader
+	logger                 *slog.Logger
+	dashboardTmpl          *template.Template
+	loginTmpl              *template.Template
+	settingsTmpl           *template.Template
+	sessions               *SessionStore
+	config                 *config.Config
+	metrics                *metrics.Metrics
+	version                string
+	smtpTestMu             sync.Mutex
+	smtpTestLastSent       time.Time
+	pushTestMu             sync.Mutex
+	pushTestLastSent       time.Time
+	openCodeConnectionTest func(context.Context, string, string) error
+	miniMaxConnectionTest  func(context.Context, string, string) error
+	rateLimiter            *LoginRateLimiter // Per-IP rate limiting for login attempts
 }
 
 // DefaultCodexAccountID is the default account ID for single-account setups.
@@ -993,7 +995,7 @@ func (h *Handler) getProviderFromRequest(r *http.Request) (string, error) {
 		return "", fmt.Errorf("configuration not available")
 	}
 
-	providers := h.config.AvailableProviders()
+	providers := h.availableProviders()
 	if len(providers) == 0 {
 		return "", fmt.Errorf("no providers configured")
 	}
@@ -1009,18 +1011,61 @@ func (h *Handler) getProviderFromRequest(r *http.Request) (string, error) {
 
 	// "both" is a virtual provider - allowed when multiple are configured
 	if provider == "both" {
-		if h.config.HasMultipleProviders() {
+		if len(providers) > 1 {
 			return "both", nil
 		}
 		return "", fmt.Errorf("'both' requires multiple providers to be configured")
 	}
 
 	// Validate provider is available
-	if !h.config.HasProvider(provider) {
+	configured := false
+	for _, available := range providers {
+		if available == provider {
+			configured = true
+			break
+		}
+	}
+	if !configured {
 		return "", fmt.Errorf("provider '%s' is not configured", provider)
 	}
 
 	return provider, nil
+}
+
+func (h *Handler) availableProviders() []string {
+	if h.config == nil {
+		return nil
+	}
+	providers := append([]string(nil), h.config.AvailableProviders()...)
+	present := make(map[string]bool, len(providers))
+	for _, provider := range providers {
+		present[provider] = true
+	}
+	// Multi-account credentials may be created entirely through the UI and do
+	// not necessarily have an equivalent environment variable in Config.
+	for _, provider := range []string{"zai", "minimax", "deepseek", "opencode"} {
+		if !present[provider] && h.isProviderConfigured(provider) {
+			providers = append(providers, provider)
+			present[provider] = true
+		}
+	}
+	return providers
+}
+
+func (h *Handler) hasStoredProviderCredential(provider, field string) bool {
+	if h.store == nil {
+		return false
+	}
+	raw, err := h.store.GetSetting("provider_settings")
+	if err != nil || raw == "" {
+		return false
+	}
+	var settings map[string]map[string]interface{}
+	if json.Unmarshal([]byte(raw), &settings) != nil {
+		return false
+	}
+	value, _ := settings[provider][field].(string)
+	return strings.TrimSpace(value) != ""
 }
 
 func (h *Handler) providerVisibilitySettings() map[string]interface{} {
@@ -1158,7 +1203,7 @@ func (h *Handler) isProviderConfigured(provider string) bool {
 	case "synthetic":
 		return strings.TrimSpace(h.config.SyntheticAPIKey) != ""
 	case "zai":
-		return strings.TrimSpace(h.config.ZaiAPIKey) != ""
+		return strings.TrimSpace(h.config.ZaiAPIKey) != "" || h.hasStoredProviderCredential("zai", "api_key")
 	case "copilot":
 		return strings.TrimSpace(h.config.CopilotToken) != ""
 	case "codex":
@@ -1188,7 +1233,7 @@ func (h *Handler) isProviderConfigured(provider string) bool {
 	case "moonshot":
 		return strings.TrimSpace(h.config.MoonshotAPIKey) != ""
 	case "deepseek":
-		return strings.TrimSpace(h.config.DeepSeekAPIKey) != ""
+		return strings.TrimSpace(h.config.DeepSeekAPIKey) != "" || h.hasStoredProviderCredential("deepseek", "api_key")
 	case "gemini":
 		return h.config.GeminiEnabled
 	case "cursor":
@@ -1802,10 +1847,10 @@ func (h *Handler) Providers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	providers := h.config.AvailableProviders()
+	providers := h.availableProviders()
 	providers = h.filterDashboardProviders(providers)
 
-	if h.config.HasMultipleProviders() {
+	if len(providers) > 1 {
 		providers = append(providers, "both")
 	}
 	providers = orderDashboardProviders(providers, h.loadDashboardProvidersOrder())
@@ -2459,6 +2504,7 @@ func (h *Handler) buildZaiCurrent() map[string]interface{} {
 	now := time.Now().UTC()
 	response := map[string]interface{}{
 		"capturedAt":  now.Format(time.RFC3339),
+		"hasData":     false,
 		"tokensLimit": buildEmptyZaiQuotaResponse("Tokens Limit", "Token consumption budget"),
 		"timeLimit":   buildEmptyZaiQuotaResponse("Time Limit", "Tool call time budget"),
 		"toolCalls":   buildEmptyZaiQuotaResponse("Tool Calls", "Individual tool call breakdown"),
@@ -2472,6 +2518,7 @@ func (h *Handler) buildZaiCurrent() map[string]interface{} {
 		}
 
 		if latest != nil {
+			response["hasData"] = true
 			response["capturedAt"] = latest.CapturedAt.Format(time.RFC3339)
 			tokensResp := buildZaiTokensQuotaResponse(latest)
 			timeResp := buildZaiTimeQuotaResponse(latest)
@@ -2522,7 +2569,7 @@ func buildEmptyZaiQuotaResponse(name, description string) map[string]interface{}
 		"usage":                 0.0,
 		"limit":                 0.0,
 		"percent":               0.0,
-		"status":                "healthy",
+		"status":                "pending",
 		"renewsAt":              time.Now().UTC().Format(time.RFC3339),
 		"timeUntilReset":        "0m",
 		"timeUntilResetSeconds": 0,
@@ -7138,6 +7185,21 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		sort.Strings(updatedProviders)
 		h.logger.Info("Provider settings updated", "providers", updatedProviders)
+		// DeepSeek and Z.ai factories read the current runtime config, so replace
+		// their polling agents immediately when credentials or region change.
+		if h.agentManager != nil {
+			for _, provider := range updatedProviders {
+				if provider != "deepseek" && provider != "zai" {
+					continue
+				}
+				h.agentManager.Stop(provider)
+				if h.providerPollingEnabled(provider, h.providerVisibilityMap()) && h.isProviderConfigured(provider) {
+					if err := h.agentManager.Start(provider); err != nil {
+						h.logger.Warn("failed to restart provider after settings update", "provider", provider, "error", err)
+					}
+				}
+			}
+		}
 		// Strip sensitive fields before returning to client
 		stripProviderSecrets(existing)
 		result["provider_settings"] = existing
@@ -9376,12 +9438,15 @@ func (h *Handler) minimaxAccountsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result := make([]map[string]interface{}, 0, len(accounts))
+	visibility := h.providerVisibilitySettings()
 	for _, acc := range accounts {
+		enabled := minimaxAccountTelemetryEnabled(visibility, acc.ID)
 		entry := map[string]interface{}{
 			"id":        acc.ID,
 			"name":      acc.Name,
 			"createdAt": acc.CreatedAt.Format(time.RFC3339),
 			"hasKey":    strings.Contains(acc.Metadata, "api_key"),
+			"enabled":   enabled,
 		}
 		// Parse region from metadata
 		var meta map[string]interface{}
@@ -9399,9 +9464,10 @@ func (h *Handler) minimaxAccountsList(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) minimaxAccountCreate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name   string `json:"name"`
-		APIKey string `json:"api_key"`
-		Region string `json:"region"`
+		Name    string `json:"name"`
+		APIKey  string `json:"api_key"`
+		Region  string `json:"region"`
+		Enabled *bool  `json:"enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid request body")
@@ -9415,9 +9481,32 @@ func (h *Handler) minimaxAccountCreate(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "invalid account name: use only letters, numbers, hyphens, and underscores")
 		return
 	}
+	if strings.TrimSpace(req.APIKey) == "" {
+		respondError(w, http.StatusBadRequest, "api_key is required")
+		return
+	}
+	if req.Region == "" {
+		req.Region = "global"
+	}
+	if req.Region != "global" && req.Region != "cn" {
+		respondError(w, http.StatusBadRequest, "invalid region: must be 'global' or 'cn'")
+		return
+	}
 	if h.store == nil {
 		respondError(w, http.StatusInternalServerError, "store not available")
 		return
+	}
+	accounts, queryErr := h.store.QueryProviderAccounts("minimax")
+	if queryErr != nil {
+		h.logger.Error("failed to check MiniMax account name", "error", queryErr)
+		respondError(w, http.StatusInternalServerError, "failed to create account")
+		return
+	}
+	for _, account := range accounts {
+		if account.DeletedAt == nil && account.Name == strings.TrimSpace(req.Name) {
+			respondError(w, http.StatusConflict, "account already exists")
+			return
+		}
 	}
 
 	acc, err := h.store.CreateOrRestoreProviderAccount("minimax", req.Name)
@@ -9429,24 +9518,41 @@ func (h *Handler) minimaxAccountCreate(w http.ResponseWriter, r *http.Request) {
 
 	// Store metadata (API key + region)
 	meta := map[string]string{}
-	if req.APIKey != "" {
-		meta["api_key"] = req.APIKey
+	encryptedKey, encryptErr := h.store.EncryptProviderSecret(fmt.Sprintf("minimax:%d", acc.ID), "api_key", strings.TrimSpace(req.APIKey))
+	if encryptErr != nil {
+		_ = h.store.MarkProviderAccountDeletedByID(acc.ID)
+		h.logger.Error("failed to encrypt MiniMax credential", "account_id", acc.ID, "error", encryptErr)
+		respondError(w, http.StatusInternalServerError, "failed to save account")
+		return
 	}
-	if req.Region != "" {
-		if req.Region != "global" && req.Region != "cn" {
-			respondError(w, http.StatusBadRequest, "invalid region: must be 'global' or 'cn'")
-			return
-		}
-		meta["region"] = req.Region
-	}
+	meta["api_key"] = encryptedKey
+	meta["region"] = req.Region
 	if len(meta) > 0 {
 		metaJSON, _ := json.Marshal(meta)
 		if err := h.store.UpdateProviderAccountMetadata(acc.ID, string(metaJSON)); err != nil {
+			_ = h.store.MarkProviderAccountDeletedByID(acc.ID)
 			h.logger.Error("failed to update MiniMax account metadata", "error", err)
+			respondError(w, http.StatusInternalServerError, "failed to save account")
+			return
 		}
 	}
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	if err := h.setProviderVisibility(fmt.Sprintf("minimax:%d", acc.ID), &enabled, nil); err != nil {
+		_ = h.store.MarkProviderAccountDeletedByID(acc.ID)
+		h.logger.Error("failed to save MiniMax account state", "account_id", acc.ID, "error", err)
+		respondError(w, http.StatusInternalServerError, "failed to save account")
+		return
+	}
 
-	// Hot-reload agents
+	// Start the manager for a first-time UI configuration, then hot-reload it.
+	if h.agentManager != nil && h.providerPollingEnabled("minimax", h.providerVisibilityMap()) {
+		if err := h.agentManager.Start("minimax"); err != nil {
+			h.logger.Warn("failed to start MiniMax polling after account creation", "error", err)
+		}
+	}
 	if h.minimaxAgentMgr != nil {
 		h.minimaxAgentMgr.Reload()
 	}
@@ -9470,6 +9576,7 @@ func (h *Handler) minimaxAccountUpdate(w http.ResponseWriter, r *http.Request) {
 		Name    *string `json:"name"`
 		APIKey  *string `json:"api_key"`
 		Region  *string `json:"region"`
+		Enabled *bool   `json:"enabled"`
 		Restore *bool   `json:"restore"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -9516,8 +9623,14 @@ func (h *Handler) minimaxAccountUpdate(w http.ResponseWriter, r *http.Request) {
 		if acc.Metadata != "" {
 			json.Unmarshal([]byte(acc.Metadata), &existing)
 		}
-		if req.APIKey != nil && *req.APIKey != "" {
-			existing["api_key"] = *req.APIKey
+		if req.APIKey != nil && strings.TrimSpace(*req.APIKey) != "" {
+			encryptedKey, encryptErr := h.store.EncryptProviderSecret(fmt.Sprintf("minimax:%d", id), "api_key", strings.TrimSpace(*req.APIKey))
+			if encryptErr != nil {
+				h.logger.Error("failed to encrypt MiniMax credential", "account_id", id, "error", encryptErr)
+				respondError(w, http.StatusInternalServerError, "failed to update account")
+				return
+			}
+			existing["api_key"] = encryptedKey
 		}
 		if req.Region != nil {
 			if *req.Region != "" && *req.Region != "global" && *req.Region != "cn" {
@@ -9529,6 +9642,13 @@ func (h *Handler) minimaxAccountUpdate(w http.ResponseWriter, r *http.Request) {
 		metaJSON, _ := json.Marshal(existing)
 		if err := h.store.UpdateProviderAccountMetadata(id, string(metaJSON)); err != nil {
 			h.logger.Error("failed to update MiniMax account metadata", "error", err)
+			respondError(w, http.StatusInternalServerError, "failed to update account")
+			return
+		}
+	}
+	if req.Enabled != nil {
+		if err := h.setProviderVisibility(fmt.Sprintf("minimax:%d", id), req.Enabled, nil); err != nil {
+			h.logger.Error("failed to update MiniMax account state", "account_id", id, "error", err)
 			respondError(w, http.StatusInternalServerError, "failed to update account")
 			return
 		}

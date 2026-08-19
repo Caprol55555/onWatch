@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -150,6 +151,15 @@ func TestMiniMaxAgentManager_LoadAndStartAccounts(t *testing.T) {
 	running := mgr.GetRunningAccounts()
 	if len(running) < 2 {
 		t.Errorf("expected at least 2 running accounts, got %d", len(running))
+	}
+	accounts, err := s.QueryActiveProviderAccounts("minimax")
+	if err != nil {
+		t.Fatalf("QueryActiveProviderAccounts: %v", err)
+	}
+	for _, account := range accounts {
+		if strings.Contains(account.Metadata, "sk_work") || strings.Contains(account.Metadata, "sk_personal") {
+			t.Fatalf("legacy MiniMax API key was not encrypted: %s", account.Metadata)
+		}
 	}
 
 	// Cleanup

@@ -8,9 +8,9 @@ import (
 )
 
 const (
-	settingDashboardProvidersOrder  = "dashboard_providers_order"
-	settingDashboardProviderLabels  = "dashboard_provider_labels"
-	maxDashboardProviderLabelRunes  = 48
+	settingDashboardProvidersOrder = "dashboard_providers_order"
+	settingDashboardProviderLabels = "dashboard_provider_labels"
+	maxDashboardProviderLabelRunes = 48
 )
 
 // defaultProviderTabLabel returns the built-in dashboard tab title for a provider key.
@@ -305,7 +305,7 @@ func (h *Handler) filterDashboardProviders(providers []string) []string {
 func (h *Handler) buildDashboardProviderTabs() []string {
 	providers := []string{}
 	if h.config != nil {
-		providers = h.config.AvailableProviders()
+		providers = h.availableProviders()
 		providers = h.filterDashboardProviders(providers)
 
 		hasTools := h.config.APIIntegrationsEnabled
@@ -313,7 +313,7 @@ func (h *Handler) buildDashboardProviderTabs() []string {
 		if toolsVisible {
 			providers = append(providers, "api-integrations")
 		}
-		if h.config.HasMultipleProviders() {
+		if len(providers) > 1 {
 			providers = append(providers, "both")
 		}
 	}

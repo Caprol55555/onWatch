@@ -99,8 +99,8 @@ func TestOpenCodeAgentManagerBoundsConcurrencyAndIsolatesFailures(t *testing.T) 
 	}
 
 	failed, err := s.GetOpenCodeAccount(failedID, false)
-	if err != nil || failed.AuthStatus != store.OpenCodeAuthNeedsReauth {
-		t.Fatalf("failed account status = %+v err=%v", failed, err)
+	if err != nil || failed.AuthStatus != store.OpenCodeAuthError || failed.ConsecutiveFailures != 1 {
+		t.Fatalf("first auth failure should remain retryable: account=%+v err=%v", failed, err)
 	}
 	for _, workspace := range []string{"ok-1", "ok-2", "ok-3"} {
 		accounts, _ := s.QueryOpenCodeAccounts(false)
@@ -115,6 +115,36 @@ func TestOpenCodeAgentManagerBoundsConcurrencyAndIsolatesFailures(t *testing.T) 
 	}
 	if !errors.Is(api.ErrOpenCodeUnauthorized, api.ErrOpenCodeUnauthorized) {
 		t.Fatal("sentinel sanity")
+	}
+}
+
+func TestOpenCodeAgentManagerRequiresConsecutiveAuthFailuresBeforeReauth(t *testing.T) {
+	t.Setenv("ONWATCH_CREDENTIAL_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	account, err := s.CreateOpenCodeAccount("A", "bad", "cookie", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewOpenCodeAgentManager(&concurrentOpenCodeFetcher{failWS: "bad"}, s, nil, time.Second, slog.Default())
+
+	first, err := s.GetOpenCodeAccount(account.AccountID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr.handlePollError(*first, api.ErrOpenCodeUnauthorized)
+	first, _ = s.GetOpenCodeAccount(account.AccountID, false)
+	if first.AuthStatus != store.OpenCodeAuthError || first.ConsecutiveFailures != 1 {
+		t.Fatalf("first auth failure must be retryable, got %+v", first)
+	}
+
+	mgr.handlePollError(*first, api.ErrOpenCodeUnauthorized)
+	second, _ := s.GetOpenCodeAccount(account.AccountID, false)
+	if second.AuthStatus != store.OpenCodeAuthNeedsReauth || second.ConsecutiveFailures != 2 {
+		t.Fatalf("second consecutive auth failure must require reauth, got %+v", second)
 	}
 }
 

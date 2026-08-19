@@ -1006,6 +1006,7 @@ function updateChartVisibility() {
 
 const statusConfig = {
   healthy: { label: tr('status.healthy'), icon: 'M20 6L9 17l-5-5' },
+  pending: { label: tr('status.pending'), icon: 'M12 6v6l4 2M12 2a10 10 0 1 0 10 10' },
   warning: { label: tr('status.warning'), icon: 'M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01' },
   danger: { label: tr('status.critical'), icon: 'M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01' },
   critical: { label: tr('status.critical'), icon: 'M12 9v4M12 17h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z' }
@@ -1013,6 +1014,7 @@ const statusConfig = {
 
 function refreshStatusConfigLabels() {
   statusConfig.healthy.label = tr('status.healthy');
+  statusConfig.pending.label = tr('status.pending');
   statusConfig.warning.label = tr('status.warning');
   statusConfig.danger.label = tr('status.critical');
   statusConfig.critical.label = tr('status.critical');
@@ -10958,6 +10960,7 @@ function createProviderSettingsConfig() {
   zai: {
     title: 'Z.ai',
     desc: tr('provider_settings.zai_desc'),
+    liveReload: true,
     fields: [
       { id: 'api_key', label: tr('provider_settings.api_key'), type: 'password', placeholder: tr('provider_settings.not_configured'), hint: tr('provider_settings.zai_key_hint'), sensitive: true },
       { id: 'region', label: tr('provider_settings.region'), type: 'select', options: [
@@ -10996,6 +10999,7 @@ function createProviderSettingsConfig() {
   deepseek: {
     title: 'DeepSeek',
     desc: tr('provider_settings.deepseek_desc'),
+    liveReload: true,
     fields: [
       { id: 'api_key', label: tr('provider_settings.api_key'), type: 'password', placeholder: tr('provider_settings.not_configured'), hint: tr('provider_settings.deepseek_key_hint'), sensitive: true },
     ],
@@ -11122,6 +11126,110 @@ function setupProviderAccountEditorModal() {
   });
 }
 
+function connectionErrorText(code) {
+  const key = `settings.connection_error_${code || 'connection_failed'}`;
+  const translated = tr(key);
+  return translated === key ? tr('settings.connection_error_connection_failed') : translated;
+}
+
+async function testUnsavedAccountConnection(provider) {
+  const isOpenCode = provider === 'opencode';
+  const button = document.getElementById(`${provider}-test-connection`);
+  const payload = isOpenCode
+    ? {
+        workspace_id: document.getElementById('opencode-new-workspace')?.value.trim(),
+        auth_cookie: document.getElementById('opencode-new-cookie')?.value.trim(),
+      }
+    : {
+        api_key: document.getElementById('minimax-new-key')?.value.trim(),
+        region: document.getElementById('minimax-new-region')?.value || 'global',
+      };
+  if ((isOpenCode && (!payload.workspace_id || !payload.auth_cookie)) || (!isOpenCode && !payload.api_key)) {
+    showProviderAccountEditorError(isOpenCode ? tr('opencode.required') : tr('minimax.key_placeholder'));
+    return;
+  }
+  if (button) {
+    button.disabled = true;
+    button.textContent = tr('settings.testing_connection');
+  }
+  try {
+    const response = await authFetch(`${API_BASE}/api/${provider}/accounts/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.success) {
+      showProviderAccountEditorError(tr('settings.connection_failed', { error: connectionErrorText(data.error) }));
+      return;
+    }
+    const feedback = document.getElementById('provider-account-editor-feedback');
+    showSettingsFeedback(feedback, tr('settings.connection_success'), 'success');
+  } catch (_) {
+    showProviderAccountEditorError(tr('settings.connection_failed', { error: connectionErrorText('network_error') }));
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = tr('settings.test_connection');
+    }
+  }
+}
+
+function accountImportToolbar(provider) {
+  return `<div class="provider-account-import-actions">
+    <button type="button" class="provider-settings-action" data-account-template="${provider}">${tr('settings.download_template')}</button>
+    <button type="button" class="provider-settings-action" data-account-import="${provider}">${tr('settings.batch_import')}</button>
+    <input type="file" accept=".csv,text/csv" data-account-import-file="${provider}" hidden>
+  </div>`;
+}
+
+function accountImportErrorText(code) {
+  const key = `settings.import_error_${code || 'unknown'}`;
+  const translated = tr(key);
+  return translated === key ? tr('settings.import_error_unknown') : translated;
+}
+
+function setupAccountImportControls(provider, refresh) {
+  const templateButton = document.querySelector(`[data-account-template="${provider}"]`);
+  const importButton = document.querySelector(`[data-account-import="${provider}"]`);
+  const fileInput = document.querySelector(`[data-account-import-file="${provider}"]`);
+  templateButton?.addEventListener('click', async () => {
+    const response = await authFetch(`${API_BASE}/api/${provider}/accounts/template`);
+    if (!response.ok) return;
+    const blob = await response.blob();
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `${provider}-accounts-template.csv`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  });
+  importButton?.addEventListener('click', () => fileInput?.click());
+  fileInput?.addEventListener('change', async () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    importButton.disabled = true;
+    try {
+      const response = await authFetch(`${API_BASE}/api/${provider}/accounts/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/csv; charset=utf-8' },
+        body: file,
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        showToast(tr('settings.import_failed', { error: accountImportErrorText(data.error) }), 'error');
+        return;
+      }
+      showToast(tr('settings.import_success', { count: data.imported || 0, failed: data.failed || 0 }), data.failed ? 'warning' : 'success');
+      await refresh();
+    } catch (error) {
+      showToast(tr('settings.import_failed', { error: accountImportErrorText('unknown') }), 'error');
+    } finally {
+      importButton.disabled = false;
+      fileInput.value = '';
+    }
+  });
+}
+
 function openOpenCodeAccountCreateDialog(bodyEl, config) {
   openProviderAccountEditor({
     title: tr('opencode.add_account'),
@@ -11130,6 +11238,7 @@ function openOpenCodeAccountCreateDialog(bodyEl, config) {
       <div class="settings-field"><label for="opencode-new-name">${tr('opencode.display_name')}</label><input id="opencode-new-name" class="settings-input" maxlength="80" placeholder="${tr('opencode.name_placeholder')}" /></div>
       <div class="settings-field"><label for="opencode-new-workspace">${tr('opencode.workspace_id')}</label><input id="opencode-new-workspace" class="settings-input" maxlength="256" placeholder="${tr('opencode.workspace_placeholder')}" /><span class="settings-field-hint">${tr('opencode.workspace_hint')}</span></div>
       <div class="settings-field"><label for="opencode-new-cookie">${tr('opencode.auth_cookie')}</label><input id="opencode-new-cookie" type="password" class="settings-input" autocomplete="new-password" placeholder="${tr('opencode.cookie_placeholder')}" /><span class="settings-field-hint">${tr('opencode.cookie_source_hint')}</span></div>
+      <button type="button" id="opencode-test-connection" class="provider-settings-action">${tr('settings.test_connection')}</button>
     </div>`,
     onSave: async () => {
       const name = document.getElementById('opencode-new-name')?.value.trim();
@@ -11155,6 +11264,7 @@ function openOpenCodeAccountCreateDialog(bodyEl, config) {
       return true;
     },
   });
+  document.getElementById('opencode-test-connection')?.addEventListener('click', () => testUnsavedAccountConnection('opencode'));
 }
 
 function openMiniMaxAccountCreateDialog() {
@@ -11165,12 +11275,13 @@ function openMiniMaxAccountCreateDialog() {
       <div class="settings-field"><label for="minimax-new-name">${tr('minimax.account_name')}</label><input type="text" id="minimax-new-name" class="settings-input" placeholder="${tr('minimax.name_placeholder')}" /></div>
       <div class="settings-field"><label for="minimax-new-key">${tr('minimax.api_key')}</label><input type="password" id="minimax-new-key" class="settings-input" placeholder="${tr('minimax.key_placeholder')}" autocomplete="new-password" /></div>
       <div class="settings-field"><label for="minimax-new-region">${tr('minimax.region')}</label><select id="minimax-new-region" class="settings-input"><option value="global">${tr('minimax.global')}</option><option value="cn">${tr('minimax.china')}</option></select></div>
+      <button type="button" id="minimax-test-connection" class="provider-settings-action">${tr('settings.test_connection')}</button>
     </div>`,
     onSave: async () => {
       const name = document.getElementById('minimax-new-name')?.value?.trim();
       const apiKey = document.getElementById('minimax-new-key')?.value?.trim();
       const region = document.getElementById('minimax-new-region')?.value || 'global';
-      if (!name) {
+      if (!name || !apiKey) {
         showProviderAccountEditorError(tr('minimax.name_required'));
         return false;
       }
@@ -11189,19 +11300,24 @@ function openMiniMaxAccountCreateDialog() {
       return true;
     },
   });
+  document.getElementById('minimax-test-connection')?.addEventListener('click', () => testUnsavedAccountConnection('minimax'));
 }
 
 async function renderOpenCodeAccountSettings(bodyEl, config) {
   bodyEl.innerHTML = `<div class="opencode-modal-accounts">
     <p style="color:var(--text-secondary);font-size:13px;margin:0 0 16px">${tr('opencode.accounts_desc')}</p>
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+    <div class="provider-account-toolbar">
       <h4 style="margin:0;font-size:13px;color:var(--text-secondary)">${tr('opencode.accounts')}</h4>
-      <button id="opencode-add-account-btn" class="provider-settings-action">+ ${tr('opencode.add_account')}</button>
+      <div class="provider-account-toolbar-actions">${accountImportToolbar('opencode')}<button id="opencode-add-account-btn" class="provider-settings-action">+ ${tr('opencode.add_account')}</button></div>
     </div>
     <div id="opencode-accounts-list">${tr('status.loading')}</div>
   </div>`;
   const addButton = document.getElementById('opencode-add-account-btn');
   addButton?.addEventListener('click', () => openOpenCodeAccountCreateDialog(bodyEl, config));
+  setupAccountImportControls('opencode', async () => {
+    await loadOpenCodeAccounts();
+    await renderOpenCodeAccountSettings(bodyEl, config);
+  });
 
   const list = document.getElementById('opencode-accounts-list');
   try {
@@ -11212,7 +11328,7 @@ async function renderOpenCodeAccountSettings(bodyEl, config) {
     list.innerHTML = accounts.map(account => `<div class="opencode-account-item" data-account-id="${account.account_id}" style="padding:10px 0;border-bottom:1px solid var(--border-light)">
       <div class="opencode-account-view">
         <div class="opencode-account-summary"><div style="font-weight:500">${escapeHtml(account.name)}</div><div class="opencode-account-meta" style="font-size:12px;color:var(--text-secondary)" title="${escapeHtml(account.workspace_id)}">${escapeHtml(account.workspace_id)} - ${translatedAuthStatus(account.auth_status)} - ${account.has_auth_cookie ? tr('opencode.cookie_configured') : tr('opencode.cookie_missing')}</div></div>
-        <div class="opencode-account-actions"><button data-action="edit" class="provider-settings-action">${tr('common.edit')}</button><button data-action="toggle" class="provider-settings-action">${account.enabled ? tr('opencode.disable') : tr('settings.enable')}</button><button data-action="delete" class="provider-settings-action">${tr('common.delete')}</button></div>
+        <div class="opencode-account-actions"><label class="settings-toggle" title="${account.enabled ? tr('common.enabled') : tr('common.disabled')}"><input type="checkbox" data-action="enabled" ${account.enabled ? 'checked' : ''}><span class="settings-toggle-track"></span></label><button data-action="edit" class="provider-settings-action">${tr('common.edit')}</button><button data-action="delete" class="provider-settings-action">${tr('common.delete')}</button></div>
       </div>
       <div class="opencode-account-edit" hidden>
         <div class="settings-fields"><input data-field="name" class="settings-input" value="${escapeHtml(account.name)}" maxlength="80"><input data-field="workspace" class="settings-input" value="${escapeHtml(account.workspace_id)}" maxlength="256"><input data-field="cookie" type="password" class="settings-input" autocomplete="new-password" placeholder="${tr('opencode.cookie_hint')}"></div>
@@ -11223,6 +11339,21 @@ async function renderOpenCodeAccountSettings(bodyEl, config) {
       const account = accounts[index];
       const view = item.querySelector('.opencode-account-view');
       const edit = item.querySelector('.opencode-account-edit');
+      item.querySelector('[data-action="enabled"]')?.addEventListener('change', async event => {
+        const input = event.currentTarget;
+        input.disabled = true;
+        const payload = { name: account.name, workspace_id: account.workspace_id, auth_cookie: '', enabled: input.checked };
+        const response = await authFetch(`${API_BASE}/api/opencode/accounts?id=${account.account_id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        if (response.ok) {
+          await loadOpenCodeAccounts();
+          await renderOpenCodeAccountSettings(bodyEl, config);
+        } else {
+          input.checked = !input.checked;
+          input.disabled = false;
+          const error = await response.json().catch(() => ({}));
+          showToast(error.error || tr('opencode.failed_update'), 'error');
+        }
+      });
       item.addEventListener('click', async event => {
         const action = event.target.closest('button')?.dataset.action;
         if (!action) return;
@@ -11234,7 +11365,7 @@ async function renderOpenCodeAccountSettings(bodyEl, config) {
           if (response.ok) { await loadOpenCodeAccounts(); await openProviderSettingsModal('opencode'); }
           return;
         }
-        const payload = { name: account.name, workspace_id: account.workspace_id, auth_cookie: '', enabled: action === 'toggle' ? !account.enabled : account.enabled };
+        const payload = { name: account.name, workspace_id: account.workspace_id, auth_cookie: '', enabled: account.enabled };
         if (action === 'save') {
           payload.name = edit.querySelector('[data-field="name"]').value.trim();
           payload.workspace_id = edit.querySelector('[data-field="workspace"]').value.trim();
@@ -11381,9 +11512,9 @@ async function openProviderSettingsModal(providerKey) {
     // MiniMax: account management UI (fully UI-driven, unlike Codex file-based profiles)
     let accountsHTML = '<div class="minimax-modal-accounts">';
     accountsHTML += `<p style="color:var(--text-secondary);font-size:13px;margin:0 0 16px">${tr('minimax.accounts_desc')}</p>`;
-    accountsHTML += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">';
+    accountsHTML += '<div class="provider-account-toolbar">';
     accountsHTML += `<h4 style="margin:0;font-size:13px;color:var(--text-secondary)">${tr('minimax.accounts')}</h4>`;
-    accountsHTML += `<button id="minimax-add-account-btn" style="padding:4px 12px;font-size:12px;background:var(--md-primary,#6750a4);color:#fff;border:none;border-radius:4px;cursor:pointer">+ ${tr('minimax.add_account')}</button>`;
+    accountsHTML += `<div class="provider-account-toolbar-actions">${accountImportToolbar('minimax')}<button id="minimax-add-account-btn" class="provider-settings-action">+ ${tr('minimax.add_account')}</button></div>`;
     accountsHTML += '</div>';
     accountsHTML += `<div id="minimax-accounts-list">${tr('status.loading')}</div>`;
     accountsHTML += '</div>';
@@ -11393,6 +11524,7 @@ async function openProviderSettingsModal(providerKey) {
     // Account creation is persisted immediately from the nested editor.
     const addBtn = document.getElementById('minimax-add-account-btn');
     addBtn?.addEventListener('click', openMiniMaxAccountCreateDialog);
+    setupAccountImportControls('minimax', async () => openProviderSettingsModal('minimax'));
 
     // Fetch and render accounts
     const accountsList = document.getElementById('minimax-accounts-list');
@@ -11415,6 +11547,7 @@ async function openProviderSettingsModal(providerKey) {
             html += `</div>`;
             html += `<div style="display:flex;gap:8px;align-items:center">`;
             if (!isDeleted) {
+              html += `<label class="settings-toggle" title="${account.enabled ? tr('common.enabled') : tr('common.disabled')}"><input type="checkbox" class="minimax-enabled-switch" data-id="${account.id}" ${account.enabled ? 'checked' : ''}><span class="settings-toggle-track"></span></label>`;
               html += `<button class="minimax-acct-btn" data-action="edit" data-id="${account.id}" data-name="${escapeHtml(account.name)}" data-region="${account.region || 'global'}" data-has-key="${account.hasKey}" title="${tr('minimax.edit_title')}" style="padding:4px 8px;font-size:12px;background:var(--surface-inset);border:1px solid var(--border);border-radius:4px;cursor:pointer">${tr('common.edit')}</button>`;
               html += `<button class="minimax-acct-btn" data-action="delete" data-id="${account.id}" data-name="${escapeHtml(account.name)}" title="${tr('minimax.delete_title')}" style="padding:4px 8px;font-size:12px;background:var(--surface-inset);border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--md-error,#b3261e)">${tr('common.delete')}</button>`;
             } else {
@@ -11423,6 +11556,25 @@ async function openProviderSettingsModal(providerKey) {
             html += `</div></div>`;
           });
           accountsList.innerHTML = html;
+
+          accountsList.querySelectorAll('.minimax-enabled-switch').forEach(input => {
+            input.addEventListener('change', async () => {
+              input.disabled = true;
+              const response = await authFetch(`${API_BASE}/api/minimax/accounts?id=${input.dataset.id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: input.checked }),
+              });
+              if (response.ok) {
+                await openProviderSettingsModal('minimax');
+              } else {
+                input.checked = !input.checked;
+                input.disabled = false;
+                const error = await response.json().catch(() => ({}));
+                showToast(error.error || tr('minimax.failed_update', { error: response.statusText }), 'error');
+              }
+            });
+          });
 
           // Wire action buttons
           accountsList.querySelectorAll('.minimax-acct-btn').forEach(btn => {
@@ -11568,7 +11720,7 @@ async function saveProviderSettings() {
         : String(provData[f.id]) !== String(baseline[f.id] === undefined ? (f.default ?? '') : baseline[f.id]);
       if (!changed) return;
       anyChange = true;
-      if (!f.noRestart) restartNeeded = true;
+      if (!f.noRestart && !config.liveReload) restartNeeded = true;
     });
     // Update local state with returned settings
     if (data.provider_settings) {

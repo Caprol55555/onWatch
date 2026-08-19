@@ -792,17 +792,10 @@ func run() error {
 
 	// Create API clients based on configured providers
 	var syntheticClient *api.Client
-	var zaiClient *api.ZaiClient
 
 	if cfg.HasProvider("synthetic") {
 		syntheticClient = api.NewClient(cfg.SyntheticAPIKey, logger)
 		logger.Info("Synthetic API client configured")
-	}
-
-	if cfg.HasProvider("zai") {
-		zaiBaseURL := cfg.ZaiBaseURL + "/monitor/usage/quota/limit"
-		zaiClient = api.NewZaiClient(cfg.ZaiAPIKey, logger, api.WithZaiBaseURL(zaiBaseURL))
-		logger.Info("Z.ai API client configured", "base_url", cfg.ZaiBaseURL, "region", cfg.ZaiRegion)
 	}
 
 	var anthropicClient *api.AnthropicClient
@@ -858,12 +851,6 @@ func run() error {
 	if cfg.HasProvider("moonshot") {
 		moonshotClient = api.NewMoonshotClient(cfg.MoonshotAPIKey, logger)
 		logger.Info("Moonshot API client configured")
-	}
-
-	var deepseekClient *api.DeepSeekClient
-	if cfg.HasProvider("deepseek") {
-		deepseekClient = api.NewDeepSeekClient(cfg.DeepSeekAPIKey, logger)
-		logger.Info("DeepSeek API client configured")
 	}
 
 	// Gemini provider - env vars or auto-detect from ~/.gemini/oauth_creds.json
@@ -932,16 +919,7 @@ func run() error {
 	}
 
 	// Create Z.ai tracker
-	var zaiTr *tracker.ZaiTracker
-	if cfg.HasProvider("zai") {
-		zaiTr = tracker.NewZaiTracker(db, logger)
-	}
-
-	var zaiAg *agent.ZaiAgent
-	if zaiClient != nil {
-		zaiSm := agent.NewSessionManager(db, "zai", idleTimeout, logger)
-		zaiAg = agent.NewZaiAgent(zaiClient, db, zaiTr, cfg.PollInterval, logger, zaiSm)
-	}
+	zaiTr := tracker.NewZaiTracker(db, logger)
 
 	// Create Anthropic tracker
 	var anthropicTr *tracker.AnthropicTracker
@@ -1069,10 +1047,7 @@ func run() error {
 		antigravityTr = tracker.NewAntigravityTracker(db, logger)
 	}
 
-	var minimaxTr *tracker.MiniMaxTracker
-	if cfg.HasProvider("minimax") {
-		minimaxTr = tracker.NewMiniMaxTracker(db, logger)
-	}
+	minimaxTr := tracker.NewMiniMaxTracker(db, logger)
 
 	var openrouterTr *tracker.OpenRouterTracker
 	if cfg.HasProvider("openrouter") {
@@ -1084,10 +1059,7 @@ func run() error {
 		moonshotTr = tracker.NewMoonshotTracker(db, logger)
 	}
 
-	var deepseekTr *tracker.DeepSeekTracker
-	if cfg.HasProvider("deepseek") {
-		deepseekTr = tracker.NewDeepSeekTracker(db, logger)
-	}
+	deepseekTr := tracker.NewDeepSeekTracker(db, logger)
 
 	var geminiTr *tracker.GeminiTracker
 	if cfg.HasProvider("gemini") {
@@ -1118,20 +1090,22 @@ func run() error {
 
 	// Create MiniMax agent manager for multi-account support.
 	// If a legacy MINIMAX_API_KEY is configured, seed the default account metadata.
-	var minimaxMgr *agent.MiniMaxAgentManager
-	if cfg.HasProvider("minimax") || minimaxTr != nil {
-		minimaxMgr = agent.NewMiniMaxAgentManager(db, minimaxTr, cfg.PollInterval, logger)
-		minimaxMgr.SetRegion(cfg.MiniMaxRegion)
-		// Seed the default account with the legacy API key if it has no metadata yet
-		if cfg.MiniMaxAPIKey != "" {
-			if accounts, err := db.QueryActiveProviderAccounts("minimax"); err == nil {
-				for _, acc := range accounts {
-					if acc.Name == "default" && (acc.Metadata == "" || acc.Metadata == "{}") {
-						meta := fmt.Sprintf(`{"api_key":%q,"region":%q}`, cfg.MiniMaxAPIKey, cfg.MiniMaxRegion)
-						db.UpdateProviderAccountMetadata(acc.ID, meta)
-						logger.Info("Seeded default MiniMax account with legacy API key", "id", acc.ID)
+	minimaxMgr := agent.NewMiniMaxAgentManager(db, minimaxTr, cfg.PollInterval, logger)
+	minimaxMgr.SetRegion(cfg.MiniMaxRegion)
+	// Seed the default account with the encrypted legacy API key if it has no metadata yet.
+	if cfg.MiniMaxAPIKey != "" {
+		if accounts, err := db.QueryActiveProviderAccounts("minimax"); err == nil {
+			for _, acc := range accounts {
+				if acc.Name == "default" && (acc.Metadata == "" || acc.Metadata == "{}") {
+					ciphertext, encryptErr := db.EncryptProviderSecret(fmt.Sprintf("minimax:%d", acc.ID), "api_key", cfg.MiniMaxAPIKey)
+					if encryptErr != nil {
+						logger.Error("Failed to encrypt legacy MiniMax credential", "id", acc.ID, "error", encryptErr)
 						break
 					}
+					meta := fmt.Sprintf(`{"api_key":%q,"region":%q}`, ciphertext, cfg.MiniMaxRegion)
+					_ = db.UpdateProviderAccountMetadata(acc.ID, meta)
+					logger.Info("Seeded default MiniMax account with legacy API key", "id", acc.ID)
+					break
 				}
 			}
 		}
@@ -1147,12 +1121,6 @@ func run() error {
 	if moonshotClient != nil {
 		moonshotSm := agent.NewSessionManager(db, "moonshot", idleTimeout, logger)
 		moonshotAg = agent.NewMoonshotAgent(moonshotClient, db, moonshotTr, cfg.PollInterval, logger, moonshotSm)
-	}
-
-	var deepseekAg *agent.DeepSeekAgent
-	if deepseekClient != nil {
-		deepseekSm := agent.NewSessionManager(db, "deepseek", idleTimeout, logger)
-		deepseekAg = agent.NewDeepSeekAgent(deepseekClient, db, deepseekTr, cfg.PollInterval, logger, deepseekSm)
 	}
 
 	var geminiAg *agent.GeminiAgent
@@ -1211,9 +1179,6 @@ func run() error {
 	if ag != nil {
 		ag.SetNotifier(notifier)
 	}
-	if zaiAg != nil {
-		zaiAg.SetNotifier(notifier)
-	}
 	if anthropicAg != nil {
 		anthropicAg.SetNotifier(notifier)
 	}
@@ -1234,9 +1199,6 @@ func run() error {
 	}
 	if moonshotAg != nil {
 		moonshotAg.SetNotifier(notifier)
-	}
-	if deepseekAg != nil {
-		deepseekAg.SetNotifier(notifier)
 	}
 	if geminiAg != nil {
 		geminiAg.SetNotifier(notifier)
@@ -1273,9 +1235,6 @@ func run() error {
 	}
 	if ag != nil {
 		ag.SetPollingCheck(func() bool { return isPollingEnabled("synthetic") })
-	}
-	if zaiAg != nil {
-		zaiAg.SetPollingCheck(func() bool { return isPollingEnabled("zai") })
 	}
 	if anthropicAg != nil {
 		anthropicAg.SetPollingCheck(func() bool { return isPollingEnabled("anthropic") })
@@ -1397,9 +1356,6 @@ func run() error {
 	}
 	if moonshotAg != nil {
 		moonshotAg.SetPollingCheck(func() bool { return isPollingEnabled("moonshot") })
-	}
-	if deepseekAg != nil {
-		deepseekAg.SetPollingCheck(func() bool { return isPollingEnabled("deepseek") })
 	}
 	if geminiAg != nil {
 		geminiAg.SetPollingCheck(func() bool { return isPollingEnabled("gemini") })
@@ -1536,9 +1492,27 @@ func run() error {
 	if ag != nil {
 		agentMgr.RegisterFactory("synthetic", func() (agent.AgentRunner, error) { return ag, nil })
 	}
-	if zaiAg != nil {
-		agentMgr.RegisterFactory("zai", func() (agent.AgentRunner, error) { return zaiAg, nil })
-	}
+	agentMgr.RegisterFactory("zai", func() (agent.AgentRunner, error) {
+		runtimeCfg := *cfg
+		web.ApplyProviderSettingsFromDB(db, &runtimeCfg, logger)
+		if strings.TrimSpace(runtimeCfg.ZaiAPIKey) == "" {
+			return nil, fmt.Errorf("Z.ai credentials are not configured")
+		}
+		baseRoot := strings.TrimRight(runtimeCfg.ZaiBaseURL, "/")
+		if baseRoot == "" {
+			baseRoot = "https://api.z.ai/api"
+			if runtimeCfg.ZaiRegion == "cn" {
+				baseRoot = "https://open.bigmodel.cn/api"
+			}
+		}
+		baseURL := baseRoot + "/monitor/usage/quota/limit"
+		client := api.NewZaiClient(runtimeCfg.ZaiAPIKey, logger, api.WithZaiBaseURL(baseURL))
+		sm := agent.NewSessionManager(db, "zai", idleTimeout, logger)
+		runner := agent.NewZaiAgent(client, db, zaiTr, cfg.PollInterval, logger, sm)
+		runner.SetNotifier(notifier)
+		runner.SetPollingCheck(func() bool { return isPollingEnabled("zai") })
+		return runner, nil
+	})
 	if anthropicAg != nil {
 		agentMgr.RegisterFactory("anthropic", func() (agent.AgentRunner, error) { return anthropicAg, nil })
 	}
@@ -1551,18 +1525,26 @@ func run() error {
 	if antigravityAg != nil {
 		agentMgr.RegisterFactory("antigravity", func() (agent.AgentRunner, error) { return antigravityAg, nil })
 	}
-	if minimaxMgr != nil {
-		agentMgr.RegisterFactory("minimax", func() (agent.AgentRunner, error) { return minimaxMgr, nil })
-	}
+	agentMgr.RegisterFactory("minimax", func() (agent.AgentRunner, error) { return minimaxMgr, nil })
 	if openrouterAg != nil {
 		agentMgr.RegisterFactory("openrouter", func() (agent.AgentRunner, error) { return openrouterAg, nil })
 	}
 	if moonshotAg != nil {
 		agentMgr.RegisterFactory("moonshot", func() (agent.AgentRunner, error) { return moonshotAg, nil })
 	}
-	if deepseekAg != nil {
-		agentMgr.RegisterFactory("deepseek", func() (agent.AgentRunner, error) { return deepseekAg, nil })
-	}
+	agentMgr.RegisterFactory("deepseek", func() (agent.AgentRunner, error) {
+		runtimeCfg := *cfg
+		web.ApplyProviderSettingsFromDB(db, &runtimeCfg, logger)
+		if strings.TrimSpace(runtimeCfg.DeepSeekAPIKey) == "" {
+			return nil, fmt.Errorf("DeepSeek credentials are not configured")
+		}
+		client := api.NewDeepSeekClient(runtimeCfg.DeepSeekAPIKey, logger)
+		sm := agent.NewSessionManager(db, "deepseek", idleTimeout, logger)
+		runner := agent.NewDeepSeekAgent(client, db, deepseekTr, cfg.PollInterval, logger, sm)
+		runner.SetNotifier(notifier)
+		runner.SetPollingCheck(func() bool { return isPollingEnabled("deepseek") })
+		return runner, nil
+	})
 	if geminiAg != nil {
 		agentMgr.RegisterFactory("gemini", func() (agent.AgentRunner, error) { return geminiAg, nil })
 	}
@@ -1583,9 +1565,7 @@ func run() error {
 		agentMgr.RegisterFactory("api_integrations", func() (agent.AgentRunner, error) { return apiIntegrationsAg, nil })
 	}
 	handler.SetAgentManager(agentMgr)
-	if minimaxMgr != nil {
-		handler.SetMiniMaxAgentManager(minimaxMgr)
-	}
+	handler.SetMiniMaxAgentManager(minimaxMgr)
 	updater := update.NewUpdater(version, logger)
 	handler.SetUpdater(updater)
 
