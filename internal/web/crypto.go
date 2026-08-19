@@ -133,18 +133,35 @@ func reEncryptSMTPPassword(store interface {
 
 	// Check if the password is already encrypted
 	if !IsEncryptedValue(encryptedPass) {
-		// It's plaintext, encrypt it with the new key
-		newEncrypted, err := notify.Encrypt(encryptedPass, newKey)
+		// Legacy releases stored ciphertext without a marker and could wrap it
+		// multiple times. Peel every layer that the old key can authenticate;
+		// if none can be decrypted, retain plaintext backward compatibility.
+		plaintext := encryptedPass
+		layers := 0
+		for layers < maxSMTPPasswordReEncryptionLayers {
+			decrypted, decryptErr := notify.Decrypt(plaintext, oldKey)
+			if decryptErr != nil {
+				break
+			}
+			plaintext = decrypted
+			layers++
+		}
+		if layers == maxSMTPPasswordReEncryptionLayers {
+			if _, decryptErr := notify.Decrypt(plaintext, oldKey); decryptErr == nil {
+				return fmt.Errorf("failed to decrypt SMTP password: exceeds maximum encryption layers")
+			}
+		}
+		newEncrypted, err := notify.EncryptForStorage(plaintext, newKey)
 		if err != nil {
 			return fmt.Errorf("failed to encrypt SMTP password: %w", err)
 		}
 		smtpSettings["password"] = newEncrypted
 	} else {
 		// It's encrypted, decrypt with old key and re-encrypt with new key
-		plaintext, err := notify.Decrypt(encryptedPass, oldKey)
+		plaintext, err := notify.DecryptFromStorage(encryptedPass, oldKey)
 		if err != nil {
 			// If decryption fails with old key, try with new key (might already be re-encrypted)
-			_, tryNewErr := notify.Decrypt(encryptedPass, newKey)
+			_, tryNewErr := notify.DecryptFromStorage(encryptedPass, newKey)
 			if tryNewErr == nil {
 				// Already encrypted with new key, nothing to do
 				return nil
@@ -153,7 +170,7 @@ func reEncryptSMTPPassword(store interface {
 		}
 
 		// Re-encrypt with new key
-		newEncrypted, err := notify.Encrypt(plaintext, newKey)
+		newEncrypted, err := notify.EncryptForStorage(plaintext, newKey)
 		if err != nil {
 			return fmt.Errorf("failed to re-encrypt SMTP password: %w", err)
 		}
@@ -172,3 +189,5 @@ func reEncryptSMTPPassword(store interface {
 
 	return nil
 }
+
+const maxSMTPPasswordReEncryptionLayers = 16

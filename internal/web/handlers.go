@@ -6823,7 +6823,10 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// If password is empty, preserve the existing password
+		// If password is empty, preserve the existing password byte-for-byte.
+		// The settings API never returns the secret to the browser, so an empty
+		// value means "unchanged", not "encrypt the stored ciphertext again".
+		passwordPreserved := false
 		if smtp.Password == "" {
 			existingJSON, _ := h.store.GetSetting("smtp")
 			if existingJSON != "" {
@@ -6831,15 +6834,16 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 				if json.Unmarshal([]byte(existingJSON), &existing) == nil {
 					if pwd, ok := existing["password"].(string); ok {
 						smtp.Password = pwd
+						passwordPreserved = pwd != ""
 					}
 				}
 			}
 		}
 
 		// Encrypt SMTP password using admin password hash as key
-		if smtp.Password != "" && !IsEncryptedValue(smtp.Password) {
+		if smtp.Password != "" && !passwordPreserved {
 			encryptionKey := DeriveEncryptionKey(h.sessions.passwordHash, nil)
-			encryptedPass, err := notify.Encrypt(smtp.Password, encryptionKey)
+			encryptedPass, err := notify.EncryptForStorage(smtp.Password, encryptionKey)
 			if err != nil {
 				h.logger.Error("failed to encrypt SMTP password", "error", err)
 				respondError(w, http.StatusInternalServerError, "failed to encrypt SMTP password")

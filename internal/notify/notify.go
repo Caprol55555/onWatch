@@ -210,6 +210,73 @@ type smtpSettingsJSON struct {
 	To          string `json:"to"`
 }
 
+const maxSMTPPasswordEncryptionLayers = 16
+
+// decryptSMTPPassword accepts both the current marked storage format and the
+// legacy unmarked AES-GCM format. Older settings saves could encrypt an already
+// encrypted value again, so successful ciphertext layers are peeled with a
+// strict bound and then normalized to one marked current-key layer.
+func decryptSMTPPassword(stored, currentKey, legacyKey string) (plaintext, normalized string, rewrite bool, err error) {
+	if stored == "" || currentKey == "" {
+		return stored, "", false, nil
+	}
+
+	marked := IsEncryptedValue(stored)
+	candidate := strings.TrimPrefix(stored, encryptedPrefix)
+	plaintext, ok := decryptSMTPPasswordLayer(candidate, currentKey, legacyKey)
+	if !ok {
+		if marked {
+			return "", "", false, fmt.Errorf("marked SMTP password cannot be decrypted")
+		}
+		// Backward compatibility for installations that stored plaintext.
+		return stored, "", false, nil
+	}
+
+	layers := 1
+	for layers < maxSMTPPasswordEncryptionLayers {
+		nextCandidate := strings.TrimPrefix(plaintext, encryptedPrefix)
+		next, decrypted := decryptSMTPPasswordLayer(nextCandidate, currentKey, legacyKey)
+		if !decrypted {
+			break
+		}
+		plaintext = next
+		layers++
+	}
+	if layers == maxSMTPPasswordEncryptionLayers {
+		nextCandidate := strings.TrimPrefix(plaintext, encryptedPrefix)
+		if _, decrypted := decryptSMTPPasswordLayer(nextCandidate, currentKey, legacyKey); decrypted {
+			return "", "", false, fmt.Errorf("SMTP password exceeds maximum encryption layers")
+		}
+	}
+
+	// A single current-format layer is already canonical.
+	if marked && layers == 1 {
+		if _, err := DecryptFromStorage(stored, currentKey); err == nil {
+			return plaintext, "", false, nil
+		}
+	}
+
+	normalized, err = EncryptForStorage(plaintext, currentKey)
+	if err != nil {
+		return "", "", false, err
+	}
+	return plaintext, normalized, true, nil
+}
+
+func decryptSMTPPasswordLayer(ciphertext, currentKey, legacyKey string) (plaintext string, ok bool) {
+	if currentKey != "" {
+		if decrypted, err := Decrypt(ciphertext, currentKey); err == nil {
+			return decrypted, true
+		}
+	}
+	if legacyKey != "" && legacyKey != currentKey {
+		if decrypted, err := Decrypt(ciphertext, legacyKey); err == nil {
+			return decrypted, true
+		}
+	}
+	return "", false
+}
+
 // ConfigureSMTP initializes or updates the SMTP mailer from DB settings.
 // The handler stores SMTP config as a single JSON blob under key "smtp".
 func (e *NotificationEngine) ConfigureSMTP() error {
@@ -250,44 +317,28 @@ func (e *NotificationEngine) ConfigureSMTP() error {
 		}
 	}
 
-	// Decrypt SMTP password if encrypted.
-	// Migration path: if current key fails, try legacy key and re-encrypt with current key.
+	// Decrypt SMTP password and normalize legacy or multiply encrypted values.
 	password := s.Password
 	e.mu.RLock()
 	key := e.encryptionKey
 	legacyKey := e.legacyEncryptionKey
 	e.mu.RUnlock()
 
-	if key != "" && password != "" && len(password) > 24 {
-		// Try current key first.
-		if decrypted, err := Decrypt(password, key); err == nil {
-			password = decrypted
-		} else {
-			migrated := false
-			if legacyKey != "" && legacyKey != key {
-				if legacyPlaintext, legacyErr := Decrypt(password, legacyKey); legacyErr == nil {
-					if reEncrypted, reEncErr := Encrypt(legacyPlaintext, key); reEncErr == nil {
-						s.Password = reEncrypted
-						smtpJSONUpdated, marshalErr := json.Marshal(s)
-						if marshalErr == nil {
-							if saveErr := e.store.SetSetting("smtp", string(smtpJSONUpdated)); saveErr != nil {
-								e.logger.Warn("failed to persist migrated SMTP password", "error", saveErr)
-							} else {
-								e.logger.Info("migrated legacy SMTP password encryption to current key")
-								migrated = true
-							}
-						} else {
-							e.logger.Warn("failed to marshal SMTP settings during migration", "error", marshalErr)
-						}
-					} else {
-						e.logger.Warn("failed to re-encrypt SMTP password during migration", "error", reEncErr)
-					}
-					password = legacyPlaintext
-				}
-			}
-			if !migrated {
-				// Decrypt failure can still mean plaintext or invalid ciphertext.
-				e.logger.Debug("SMTP password decryption failed (may be plaintext)", "error", err)
+	if key != "" && password != "" {
+		decrypted, normalized, rewrite, decryptErr := decryptSMTPPassword(password, key, legacyKey)
+		if decryptErr != nil {
+			return fmt.Errorf("notify.ConfigureSMTP: decrypt SMTP password: %w", decryptErr)
+		}
+		password = decrypted
+		if rewrite {
+			s.Password = normalized
+			smtpJSONUpdated, marshalErr := json.Marshal(s)
+			if marshalErr != nil {
+				e.logger.Warn("failed to marshal normalized SMTP settings", "error", marshalErr)
+			} else if saveErr := e.store.SetSetting("smtp", string(smtpJSONUpdated)); saveErr != nil {
+				e.logger.Warn("failed to persist normalized SMTP password", "error", saveErr)
+			} else {
+				e.logger.Info("normalized SMTP password encryption")
 			}
 		}
 	}

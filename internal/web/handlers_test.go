@@ -13,6 +13,7 @@ import (
 
 	"github.com/onllm-dev/onwatch/v2/internal/api"
 	"github.com/onllm-dev/onwatch/v2/internal/config"
+	"github.com/onllm-dev/onwatch/v2/internal/notify"
 	"github.com/onllm-dev/onwatch/v2/internal/store"
 	"github.com/onllm-dev/onwatch/v2/internal/tracker"
 )
@@ -9691,6 +9692,45 @@ func TestHandler_UpdateSettings_SMTPSaveWithPassword(t *testing.T) {
 	saved, _ := s.GetSetting("smtp")
 	if saved == "" {
 		t.Error("expected SMTP setting to be saved")
+	}
+	var savedSMTP struct {
+		Password string `json:"password"`
+	}
+	if err := json.Unmarshal([]byte(saved), &savedSMTP); err != nil {
+		t.Fatalf("unmarshal saved SMTP settings: %v", err)
+	}
+	if !notify.IsEncryptedValue(savedSMTP.Password) {
+		t.Fatalf("expected marked encrypted SMTP password, got unmarked value")
+	}
+	key := DeriveEncryptionKey(hash, nil)
+	plaintext, err := notify.DecryptFromStorage(savedSMTP.Password, key)
+	if err != nil {
+		t.Fatalf("decrypt saved SMTP password: %v", err)
+	}
+	if plaintext != "secret" {
+		t.Fatalf("saved SMTP password decrypted to %q, want original value", plaintext)
+	}
+
+	// Saving unrelated SMTP fields with an empty password must preserve the
+	// ciphertext byte-for-byte instead of encrypting it a second time.
+	body = `{"smtp":{"host":"smtp.changed.example.com","port":587,"protocol":"tls","username":"user","password":"","from_address":"test@example.com","to":"admin@example.com"}}`
+	req = httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	w = httptest.NewRecorder()
+	h.UpdateSettings(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 when preserving SMTP password, got %d: %s", w.Code, w.Body.String())
+	}
+	preservedJSON, _ := s.GetSetting("smtp")
+	var preserved struct {
+		Password string `json:"password"`
+	}
+	if err := json.Unmarshal([]byte(preservedJSON), &preserved); err != nil {
+		t.Fatalf("unmarshal preserved SMTP settings: %v", err)
+	}
+	if preserved.Password != savedSMTP.Password {
+		t.Fatal("expected empty password update to preserve existing ciphertext without re-encryption")
 	}
 }
 

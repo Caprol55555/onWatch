@@ -787,7 +787,10 @@ func TestNotificationEngine_ConfigureSMTP_LegacyEncryptedPasswordMigratesToCurre
 		t.Fatal("expected SMTP password to be re-encrypted with current key")
 	}
 
-	decrypted, err := Decrypt(updated.Password, currentKey)
+	if !IsEncryptedValue(updated.Password) {
+		t.Fatal("expected migrated SMTP password to use the marked storage format")
+	}
+	decrypted, err := DecryptFromStorage(updated.Password, currentKey)
 	if err != nil {
 		t.Fatalf("Decrypt with current key failed: %v", err)
 	}
@@ -806,7 +809,74 @@ func TestNotificationEngine_ConfigureSMTP_LegacyEncryptedPasswordMigratesToCurre
 	}
 }
 
-func TestNotificationEngine_ConfigureSMTP_CurrentKeyEncryptedPasswordDoesNotRewrite(t *testing.T) {
+func TestNotificationEngine_ConfigureSMTP_RepairsMultiplyEncryptedPassword(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	defer s.Close()
+
+	key, err := GenerateEncryptionKey()
+	if err != nil {
+		t.Fatalf("GenerateEncryptionKey failed: %v", err)
+	}
+	plaintext := "smtp-client-password"
+	password := plaintext
+	for range 3 {
+		password, err = Encrypt(password, key)
+		if err != nil {
+			t.Fatalf("Encrypt layer failed: %v", err)
+		}
+	}
+
+	smtpJSON, _ := json.Marshal(smtpSettingsJSON{
+		Host:        "smtp.example.com",
+		Port:        465,
+		Username:    "user@test.com",
+		Password:    password,
+		Protocol:    "tls",
+		FromAddress: "user@test.com",
+		To:          "user@test.com",
+	})
+	if err := s.SetSetting("smtp", string(smtpJSON)); err != nil {
+		t.Fatalf("SetSetting smtp failed: %v", err)
+	}
+
+	engine := newTestEngine(t, s)
+	engine.SetEncryptionKey(key)
+	if err := engine.ConfigureSMTP(); err != nil {
+		t.Fatalf("ConfigureSMTP failed: %v", err)
+	}
+
+	engine.mu.RLock()
+	mailer := engine.mailer
+	engine.mu.RUnlock()
+	if mailer == nil {
+		t.Fatal("expected configured mailer")
+	}
+	if mailer.config.Password != plaintext {
+		t.Fatalf("mailer password = %q, want repaired plaintext", mailer.config.Password)
+	}
+
+	updatedJSON, err := s.GetSetting("smtp")
+	if err != nil {
+		t.Fatalf("GetSetting smtp failed: %v", err)
+	}
+	var updated smtpSettingsJSON
+	if err := json.Unmarshal([]byte(updatedJSON), &updated); err != nil {
+		t.Fatalf("Unmarshal updated smtp JSON failed: %v", err)
+	}
+	if !IsEncryptedValue(updated.Password) {
+		t.Fatal("expected repaired password to use the marked storage format")
+	}
+	decrypted, err := DecryptFromStorage(updated.Password, key)
+	if err != nil {
+		t.Fatalf("DecryptFromStorage repaired password failed: %v", err)
+	}
+	if decrypted != plaintext {
+		t.Fatalf("repaired stored password decrypted to %q, want original value", decrypted)
+	}
+}
+
+func TestNotificationEngine_ConfigureSMTP_CurrentKeyLegacyCiphertextGetsMarked(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
 	defer s.Close()
@@ -856,8 +926,15 @@ func TestNotificationEngine_ConfigureSMTP_CurrentKeyEncryptedPasswordDoesNotRewr
 	if err := json.Unmarshal([]byte(updatedJSON), &updated); err != nil {
 		t.Fatalf("Unmarshal updated smtp JSON failed: %v", err)
 	}
-	if updated.Password != currentCiphertext {
-		t.Fatal("expected SMTP password ciphertext to remain unchanged when current key decrypts")
+	if updated.Password == currentCiphertext || !IsEncryptedValue(updated.Password) {
+		t.Fatal("expected legacy unmarked ciphertext to be normalized to marked storage format")
+	}
+	decrypted, err := DecryptFromStorage(updated.Password, currentKey)
+	if err != nil {
+		t.Fatalf("DecryptFromStorage normalized password failed: %v", err)
+	}
+	if decrypted != plaintext {
+		t.Fatalf("normalized password decrypted to %q, want %q", decrypted, plaintext)
 	}
 
 	engine.mu.RLock()

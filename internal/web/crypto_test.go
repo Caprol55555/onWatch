@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -190,12 +191,72 @@ func TestReEncryptAllData_Success(t *testing.T) {
 		t.Fatalf("failed to parse updated smtp setting: %v", err)
 	}
 	ciphertext, _ := gotSMTP["password"].(string)
-	plaintext, err := notify.Decrypt(ciphertext, newKey)
+	plaintext, err := notify.DecryptFromStorage(ciphertext, newKey)
 	if err != nil {
-		t.Fatalf("notify.Decrypt() with new key error = %v", err)
+		t.Fatalf("notify.DecryptFromStorage() with new key error = %v", err)
 	}
 	if plaintext != "smtp-secret" {
 		t.Fatalf("decrypted password = %q, want smtp-secret", plaintext)
+	}
+}
+
+func TestReEncryptSMTPPassword_MarkedCiphertext(t *testing.T) {
+	setTestEncryptionSalt(t, []byte("abcdefghijklmnop"))
+	store := newMemorySettingStore()
+	oldKey := DeriveEncryptionKey("old-hash", nil)
+	newKey := DeriveEncryptionKey("new-hash", nil)
+	stored, err := notify.EncryptForStorage("smtp-secret", oldKey)
+	if err != nil {
+		t.Fatalf("notify.EncryptForStorage() error = %v", err)
+	}
+	store.settings["smtp"] = fmt.Sprintf(`{"password":%q}`, stored)
+
+	if err := reEncryptSMTPPassword(store, oldKey, newKey); err != nil {
+		t.Fatalf("reEncryptSMTPPassword() error = %v", err)
+	}
+	var smtp map[string]any
+	if err := json.Unmarshal([]byte(store.settings["smtp"]), &smtp); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	rotated, _ := smtp["password"].(string)
+	plaintext, err := notify.DecryptFromStorage(rotated, newKey)
+	if err != nil {
+		t.Fatalf("notify.DecryptFromStorage() with new key error = %v", err)
+	}
+	if plaintext != "smtp-secret" {
+		t.Fatalf("rotated password = %q, want smtp-secret", plaintext)
+	}
+}
+
+func TestReEncryptSMTPPassword_MultiplyEncryptedLegacyCiphertext(t *testing.T) {
+	setTestEncryptionSalt(t, []byte("abcdefghijklmnop"))
+	store := newMemorySettingStore()
+	oldKey := DeriveEncryptionKey("old-hash", nil)
+	newKey := DeriveEncryptionKey("new-hash", nil)
+	stored := "smtp-secret"
+	var err error
+	for range 3 {
+		stored, err = notify.Encrypt(stored, oldKey)
+		if err != nil {
+			t.Fatalf("notify.Encrypt() error = %v", err)
+		}
+	}
+	store.settings["smtp"] = fmt.Sprintf(`{"password":%q}`, stored)
+
+	if err := reEncryptSMTPPassword(store, oldKey, newKey); err != nil {
+		t.Fatalf("reEncryptSMTPPassword() error = %v", err)
+	}
+	var smtp map[string]any
+	if err := json.Unmarshal([]byte(store.settings["smtp"]), &smtp); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	rotated, _ := smtp["password"].(string)
+	plaintext, err := notify.DecryptFromStorage(rotated, newKey)
+	if err != nil {
+		t.Fatalf("notify.DecryptFromStorage() with new key error = %v", err)
+	}
+	if plaintext != "smtp-secret" {
+		t.Fatalf("rotated legacy password = %q, want smtp-secret", plaintext)
 	}
 }
 
@@ -283,9 +344,9 @@ func TestReEncryptSMTPPassword_Branches(t *testing.T) {
 					t.Fatalf("json.Unmarshal() error = %v", err)
 				}
 				ciphertext, _ := smtp["password"].(string)
-				plaintext, err := notify.Decrypt(ciphertext, newKey)
+				plaintext, err := notify.DecryptFromStorage(ciphertext, newKey)
 				if err != nil {
-					t.Fatalf("notify.Decrypt() error = %v", err)
+					t.Fatalf("notify.DecryptFromStorage() error = %v", err)
 				}
 				if plaintext != "plain-secret" {
 					t.Fatalf("decrypted password = %q, want plain-secret", plaintext)
