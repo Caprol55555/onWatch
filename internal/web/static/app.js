@@ -25,6 +25,52 @@ function localizedRangeLabel(value) {
   return value;
 }
 
+function showToast(message, type = 'info', options = {}) {
+  let stack = document.getElementById('toast-stack');
+  if (!stack) {
+    stack = document.createElement('div');
+    stack.id = 'toast-stack';
+    stack.className = 'toast-stack';
+    stack.setAttribute('aria-live', 'polite');
+    stack.setAttribute('aria-atomic', 'false');
+    document.body.appendChild(stack);
+  }
+
+  const toast = document.createElement('div');
+  toast.className = `app-toast app-toast-${type}`;
+  toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
+
+  const messageEl = document.createElement('span');
+  messageEl.className = 'app-toast-message';
+  messageEl.textContent = String(message || '');
+  toast.appendChild(messageEl);
+
+  if (options.actionLabel && typeof options.onAction === 'function') {
+    const action = document.createElement('button');
+    action.type = 'button';
+    action.className = 'app-toast-action';
+    action.textContent = options.actionLabel;
+    action.addEventListener('click', () => {
+      toast.remove();
+      options.onAction();
+    });
+    toast.appendChild(action);
+  }
+
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'app-toast-close';
+  close.setAttribute('aria-label', tr('notifications.dismiss'));
+  close.textContent = '\u00d7';
+  close.addEventListener('click', () => toast.remove());
+  toast.appendChild(close);
+  stack.appendChild(toast);
+
+  const timeout = Number.isFinite(options.timeout) ? options.timeout : 7000;
+  if (timeout > 0) setTimeout(() => toast.remove(), timeout);
+  return toast;
+}
+
 // ── Lazy Loading via IntersectionObserver ──
 const _lazyLoaded = new Set();
 function lazyLoadOnVisible(selector, callback) {
@@ -10734,8 +10780,15 @@ function createProviderToggleRow({ key, name, desc, vis, configured, autoDetecta
         const data = await res.json();
         if (!res.ok || data.success === false) {
           input.checked = !enabled;
-          const msg = data && data.message ? data.message : tr('common.failed_provider_update');
-          showSettingsFeedback(feedback, `${name}: ${msg}`, 'error');
+          if (data && data.error === 'credentials_required') {
+            const options = hasSettings ? {
+              actionLabel: tr('provider_settings.configure_now'),
+              onAction: () => openProviderSettingsModal(baseKey),
+            } : {};
+            showToast(`${name}: ${tr('provider_settings.credentials_required', { name })}`, 'error', options);
+          } else {
+            showToast(`${name}: ${tr('common.failed_provider_update')}`, 'error');
+          }
           return;
         }
 
@@ -10757,7 +10810,7 @@ function createProviderToggleRow({ key, name, desc, vis, configured, autoDetecta
         }
       } catch (e) {
         input.checked = !enabled;
-        showSettingsFeedback(document.getElementById('settings-feedback'), `${name}: ${tr('common.network_error')}`, 'error');
+        showToast(`${name}: ${tr('common.network_error')}`, 'error');
       } finally {
         input.disabled = false;
       }
@@ -11006,7 +11059,11 @@ async function renderOpenCodeAccountSettings(bodyEl, config) {
     if (!name || !workspace_id || !auth_cookie) { alert(tr('opencode.required')); return; }
     const res = await authFetch(`${API_BASE}/api/opencode/accounts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, workspace_id, auth_cookie, enabled: true }) });
     if (res.ok) { await loadOpenCodeAccounts(); await openProviderSettingsModal('opencode'); }
-    else { const data = await res.json().catch(() => ({})); alert(data.error || tr('opencode.failed_add')); }
+    else {
+      const data = await res.json().catch(() => ({}));
+      const message = data.error === 'workspace_exists' ? tr('opencode.workspace_exists') : tr('opencode.failed_add');
+      showToast(message, 'error');
+    }
   });
 
   const list = document.getElementById('opencode-accounts-list');

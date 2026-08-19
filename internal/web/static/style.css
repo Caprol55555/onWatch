@@ -3170,6 +3170,81 @@ select.settings-input {
   border: 1px solid var(--status-danger);
 }
 
+.toast-stack {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(420px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.app-toast {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  color: var(--text-primary);
+  background: var(--surface-card);
+  border: 1px solid var(--border-default);
+  border-left: 4px solid var(--accent-teal);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  pointer-events: auto;
+}
+
+.app-toast-error {
+  border-left-color: var(--accent-red);
+}
+
+.app-toast-message {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.app-toast-action,
+.app-toast-close {
+  flex-shrink: 0;
+  border: 0;
+  color: var(--accent-teal);
+  background: transparent;
+  cursor: pointer;
+}
+
+.app-toast-action {
+  padding: 5px 8px;
+  font-weight: 600;
+}
+
+.app-toast-close {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--text-muted);
+  font-size: 20px;
+  line-height: 1;
+  border-radius: var(--radius-sm);
+}
+
+.app-toast-action:hover,
+.app-toast-close:hover {
+  background: var(--surface-inset);
+}
+
+@media (max-width: 600px) {
+  .toast-stack {
+    top: 12px;
+    right: 16px;
+    left: 16px;
+    width: auto;
+  }
+}
+
 .menubar-section {
   display: flex;
   flex-direction: column;

@@ -261,6 +261,12 @@ func TestHandler_ToggleProvider(t *testing.T) {
 		if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"credentials_required"`) {
 			t.Fatalf("unexpected credentials-required response: status=%d body=%s", rr.Code, rr.Body.String())
 		}
+		if strings.Contains(rr.Body.String(), ".env") || strings.Contains(rr.Body.String(), "Provider requires configuration") {
+			t.Fatalf("credentials response exposed an obsolete, non-localized setup instruction: %s", rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), `"configurationTarget":"provider_settings"`) {
+			t.Fatalf("credentials response did not identify the settings UI: %s", rr.Body.String())
+		}
 	})
 
 	t.Run("starts and stops agent", func(t *testing.T) {

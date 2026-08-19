@@ -30,6 +30,9 @@ var validOpenCodeAuthStatuses = map[string]bool{
 	OpenCodeAuthUnauthorized: true, OpenCodeAuthError: true, OpenCodeAuthDisabled: true,
 }
 
+// ErrOpenCodeWorkspaceExists prevents create requests from replacing an active account.
+var ErrOpenCodeWorkspaceExists = errors.New("OpenCode workspace already exists")
+
 type OpenCodeAccount struct {
 	AccountID           int64      `json:"account_id"`
 	Name                string     `json:"name"`
@@ -289,6 +292,8 @@ func (s *Store) CreateOpenCodeAccount(name, workspaceID, authCookie string, enab
 			return nil, fmt.Errorf("create provider account: %w", execErr)
 		}
 		accountID, err = result.LastInsertId()
+	} else if err == nil && !deletedAt.Valid {
+		return nil, ErrOpenCodeWorkspaceExists
 	} else if err == nil {
 		_, err = tx.Exec(`UPDATE provider_accounts SET name = ?, deleted_at = NULL WHERE id = ?`, name, accountID)
 	}

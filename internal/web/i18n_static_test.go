@@ -183,6 +183,35 @@ func TestAppJSLocalizesPrimaryDynamicSettingsAndDashboardText(t *testing.T) {
 	}
 }
 
+func TestProviderCredentialFailureUsesAccessibleToastAndLocalizedSettingsAction(t *testing.T) {
+	t.Parallel()
+
+	appJS := readStaticAppJS(t)
+	for _, marker := range []string{
+		"function showToast(",
+		"role', type === 'error' ? 'alert' : 'status'",
+		"tr('provider_settings.credentials_required'",
+		"tr('provider_settings.configure_now')",
+		"openProviderSettingsModal(baseKey)",
+	} {
+		if !strings.Contains(appJS, marker) {
+			t.Errorf("provider credential failure notification missing %q", marker)
+		}
+	}
+
+	start := strings.Index(appJS, "if (!res.ok || data.success === false)")
+	if start < 0 {
+		t.Fatal("provider credential failure block is missing")
+	}
+	credentialFailureBlock := appJS[start:]
+	if end := strings.Index(credentialFailureBlock, "return;"); end >= 0 {
+		credentialFailureBlock = credentialFailureBlock[:end]
+	}
+	if strings.Contains(credentialFailureBlock, "showSettingsFeedback") {
+		t.Error("provider credential failure must not render in the bottom-of-page settings feedback")
+	}
+}
+
 func TestProviderSettingsCoverCredentialAndDiscoveryProviders(t *testing.T) {
 	t.Parallel()
 

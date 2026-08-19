@@ -1719,10 +1719,11 @@ func (h *Handler) ToggleProvider(w http.ResponseWriter, r *http.Request) {
 	if req.Polling != nil && *req.Polling {
 		if !h.isProviderConfigured(baseProvider) && !h.tryAutoDetect(baseProvider) {
 			respondJSON(w, http.StatusOK, map[string]interface{}{
-				"success":        false,
-				"error":          "credentials_required",
-				"message":        "Provider requires configuration. Add credentials to ~/.onwatch/.env",
-				"autoDetectable": baseProvider == "anthropic" || baseProvider == "codex" || baseProvider == "antigravity",
+				"success":             false,
+				"error":               "credentials_required",
+				"provider":            baseProvider,
+				"configurationTarget": "provider_settings",
+				"autoDetectable":      baseProvider == "anthropic" || baseProvider == "codex" || baseProvider == "antigravity",
 			})
 			return
 		}

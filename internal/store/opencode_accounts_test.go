@@ -102,6 +102,35 @@ func TestOpenCodeCredentialAADPreventsCrossAccountDecryption(t *testing.T) {
 	}
 }
 
+func TestCreateOpenCodeAccountRejectsActiveWorkspaceWithoutReplacingCredentials(t *testing.T) {
+	setOpenCodeTestKey(t)
+	s, err := New(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	original, err := s.CreateOpenCodeAccount("原账号", "wrk_unique", "original-cookie", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateOpenCodeAccount("误添加账号", "wrk_unique", "replacement-cookie", true); !errors.Is(err, ErrOpenCodeWorkspaceExists) {
+		t.Fatalf("duplicate workspace error = %v, want ErrOpenCodeWorkspaceExists", err)
+	}
+
+	accounts, err := s.QueryOpenCodeAccounts(false)
+	if err != nil || len(accounts) != 1 {
+		t.Fatalf("accounts=%+v err=%v", accounts, err)
+	}
+	persisted, err := s.GetOpenCodeAccount(original.AccountID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Name != "原账号" || persisted.AuthCookie != "original-cookie" {
+		t.Fatalf("duplicate create replaced active account: %+v", persisted)
+	}
+}
+
 func TestBootstrapLegacyOpenCodePrefersDBAndScrubsPlaintext(t *testing.T) {
 	setOpenCodeTestKey(t)
 	s, err := New(":memory:")

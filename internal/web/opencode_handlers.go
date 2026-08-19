@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/onllm-dev/onwatch/v2/internal/api"
+	"github.com/onllm-dev/onwatch/v2/internal/store"
 	"github.com/onllm-dev/onwatch/v2/internal/tracker"
 )
 
@@ -61,6 +63,10 @@ func (h *Handler) OpenCodeAccounts(w http.ResponseWriter, r *http.Request) {
 		account, err := h.store.CreateOpenCodeAccount(req.Name, req.WorkspaceID, req.AuthCookie, req.Enabled)
 		if err != nil {
 			h.logger.Warn("failed to create OpenCode account", "error", err)
+			if errors.Is(err, store.ErrOpenCodeWorkspaceExists) {
+				respondJSON(w, http.StatusConflict, map[string]any{"error": "workspace_exists"})
+				return
+			}
 			respondError(w, http.StatusConflict, "could not create account")
 			return
 		}

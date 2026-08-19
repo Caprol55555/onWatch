@@ -81,6 +81,50 @@ func TestOpenCodeAccountsCRUDNeverReturnsCookie(t *testing.T) {
 	}
 }
 
+func TestOpenCodeAccountAPIKeepsThreeDistinctAccountsAndRejectsDuplicateWorkspace(t *testing.T) {
+	t.Setenv("ONWATCH_CREDENTIAL_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	h := NewHandler(s, nil, nil, nil, &config.Config{})
+
+	for _, body := range []string{
+		`{"name":"账号一","workspace_id":"wrk_one","auth_cookie":"cookie-one","enabled":true}`,
+		`{"name":"账号二","workspace_id":"wrk_two","auth_cookie":"cookie-two","enabled":true}`,
+		`{"name":"账号三","workspace_id":"wrk_three","auth_cookie":"cookie-three","enabled":true}`,
+	} {
+		rr := httptest.NewRecorder()
+		h.OpenCodeAccounts(rr, httptest.NewRequest(http.MethodPost, "/api/opencode/accounts", strings.NewReader(body)))
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("create status=%d body=%s", rr.Code, rr.Body.String())
+		}
+	}
+
+	rr := httptest.NewRecorder()
+	h.OpenCodeAccounts(rr, httptest.NewRequest(http.MethodGet, "/api/opencode/accounts", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	for _, name := range []string{"账号一", "账号二", "账号三"} {
+		if !strings.Contains(rr.Body.String(), name) {
+			t.Fatalf("three-account list omitted %s: %s", name, rr.Body.String())
+		}
+	}
+
+	rr = httptest.NewRecorder()
+	duplicate := `{"name":"不应覆盖","workspace_id":"wrk_two","auth_cookie":"replacement-cookie","enabled":true}`
+	h.OpenCodeAccounts(rr, httptest.NewRequest(http.MethodPost, "/api/opencode/accounts", strings.NewReader(duplicate)))
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), `"workspace_exists"`) {
+		t.Fatalf("duplicate response=%d %s", rr.Code, rr.Body.String())
+	}
+	accounts, err := s.QueryOpenCodeAccounts(false)
+	if err != nil || len(accounts) != 3 {
+		t.Fatalf("duplicate changed account count: accounts=%+v err=%v", accounts, err)
+	}
+}
+
 func TestOpenCodeCurrentIsAccountScopedAndSummaryIsCredentialSafe(t *testing.T) {
 	t.Setenv("ONWATCH_CREDENTIAL_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
 	s, err := store.New(":memory:")
