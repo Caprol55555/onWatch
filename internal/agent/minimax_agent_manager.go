@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -142,6 +143,30 @@ func (m *MiniMaxAgentManager) loadAndStartAccounts() error {
 
 	for _, acc := range accounts {
 		meta := parseMinimaxAccountMeta(acc.Metadata)
+		if meta.APIKey != "" {
+			providerKey := fmt.Sprintf("minimax:%d", acc.ID)
+			if strings.HasPrefix(meta.APIKey, "v1:") {
+				plaintext, decryptErr := m.store.DecryptProviderSecret(providerKey, "api_key", meta.APIKey)
+				if decryptErr != nil {
+					m.logger.Error("failed to decrypt MiniMax credential", "account_id", acc.ID, "error", decryptErr)
+					continue
+				}
+				meta.APIKey = plaintext
+			} else {
+				ciphertext, encryptErr := m.store.EncryptProviderSecret(providerKey, "api_key", meta.APIKey)
+				if encryptErr != nil {
+					m.logger.Error("failed to migrate MiniMax credential", "account_id", acc.ID, "error", encryptErr)
+					continue
+				}
+				storedMeta := meta
+				storedMeta.APIKey = ciphertext
+				encoded, marshalErr := json.Marshal(storedMeta)
+				if marshalErr != nil || m.store.UpdateProviderAccountMetadata(acc.ID, string(encoded)) != nil {
+					m.logger.Error("failed to save migrated MiniMax credential", "account_id", acc.ID)
+					continue
+				}
+			}
+		}
 		if meta.APIKey == "" {
 			m.logger.Debug("skipping MiniMax account without API key", "account", acc.Name, "id", acc.ID)
 			continue

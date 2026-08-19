@@ -342,9 +342,15 @@ func (m *OpenCodeAgentManager) handlePollError(account store.OpenCodeAccount, er
 	status, code, terminal := store.OpenCodeAuthError, "fetch_error", false
 	switch {
 	case errors.Is(err, api.ErrOpenCodeUnauthorized):
-		status, code, terminal = store.OpenCodeAuthNeedsReauth, "unauthorized", true
+		code = "unauthorized"
+		if account.ConsecutiveFailures >= 1 && account.LastErrorCode == code {
+			status, terminal = store.OpenCodeAuthNeedsReauth, true
+		}
 	case errors.Is(err, api.ErrOpenCodeForbidden):
-		status, code, terminal = store.OpenCodeAuthUnauthorized, "forbidden", true
+		code = "forbidden"
+		if account.ConsecutiveFailures >= 1 && account.LastErrorCode == code {
+			status, terminal = store.OpenCodeAuthUnauthorized, true
+		}
 	case errors.Is(err, context.DeadlineExceeded):
 		code = "timeout"
 	case errors.Is(err, api.ErrOpenCodeNetworkError):
@@ -368,7 +374,7 @@ func (m *OpenCodeAgentManager) handlePollError(account store.OpenCodeAccount, er
 	}
 	m.logger.Warn("OpenCode poll failed", "account_id", account.AccountID, "error_code", code)
 	if terminal && m.notifier != nil && account.AuthStatus != status {
-		m.notifier.SendAuthErrorNotification(notify.AuthErrorAlert{Provider: "opencode", AccountID: strconv.FormatInt(account.AccountID, 10), Title: "OpenCode Go authentication expired", Message: fmt.Sprintf("Account %s requires a new authentication cookie.", account.Name), IsRecovable: false})
+		m.notifier.SendAuthErrorNotification(notify.AuthErrorAlert{Provider: "opencode", AccountID: strconv.FormatInt(account.AccountID, 10), Title: "OpenCode Go 认证已失效", Message: fmt.Sprintf("账号 %s 需要更新认证 Cookie。", account.Name), IsRecovable: false})
 	}
 }
 

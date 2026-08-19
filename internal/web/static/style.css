@@ -3136,6 +3136,37 @@ select.settings-input {
   min-height: 0;
 }
 
+.provider-account-toolbar,
+.provider-account-toolbar-actions,
+.provider-account-import-actions,
+.opencode-account-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.provider-account-toolbar {
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.provider-account-toolbar-actions,
+.provider-account-import-actions,
+.opencode-account-actions {
+  flex-wrap: nowrap;
+}
+
+@media (max-width: 720px) {
+  .provider-account-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .provider-account-toolbar-actions {
+    flex-wrap: wrap;
+  }
+}
+
 .settings-autosave-row .settings-feedback {
   margin: 12px 0 0;
 }
