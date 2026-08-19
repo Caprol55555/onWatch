@@ -36,6 +36,35 @@ const realZaiAPIResponse = `{
   }
 }`
 
+const zaiCodingPlanResponse = `{
+  "code": 200,
+  "msg": "Operation successful",
+  "success": true,
+  "data": {
+    "limits": [
+      {"type":"CREDIT_LIMIT","unit":3,"number":5,"usage":1000,"currentValue":250,"remaining":750,"percentage":25,"nextResetTime":1770398385482},
+      {"type":"CREDIT_LIMIT","unit":6,"number":1,"usage":5000,"currentValue":2000,"remaining":3000,"percentage":40,"nextResetTime":1770825600000}
+    ]
+  }
+}`
+
+func TestZaiCodingPlanCreditLimitsAreSupportedAndMappedByPeriod(t *testing.T) {
+	resp, err := ParseZaiResponse([]byte(zaiCodingPlanResponse))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.HasSupportedLimits() {
+		t.Fatal("CREDIT_LIMIT should be recognized as a supported Coding Plan quota")
+	}
+	snapshot := resp.ToSnapshot(time.Now().UTC())
+	if snapshot.TimeUnit != 3 || snapshot.TimePercentage != 25 || snapshot.TimeCurrentValue != 250 {
+		t.Fatalf("5-hour Coding Plan quota was not mapped to the short-period slot: %+v", snapshot)
+	}
+	if snapshot.TokensUnit != 6 || snapshot.TokensPercentage != 40 || snapshot.TokensCurrentValue != 2000 {
+		t.Fatalf("weekly Coding Plan quota was not mapped to the long-period slot: %+v", snapshot)
+	}
+}
+
 func TestZaiQuotaResponse_ParseZaiResponse_RealData(t *testing.T) {
 	resp, err := ParseZaiResponse([]byte(realZaiAPIResponse))
 	if err != nil {

@@ -170,6 +170,24 @@
             </div>
             <div class="settings-divider"></div>
             <div class="settings-section">
+                <h3 class="settings-section-title" data-i18n="settings.pace_alerts">Weekly and Monthly Pace Alerts</h3>
+                <p class="settings-section-desc" data-i18n="settings.pace_alerts_desc">Alert when weekly or monthly usage is ahead of elapsed working time. Five-hour and other quotas continue using the global utilization thresholds.</p>
+                <div class="settings-fields">
+                    <div class="settings-toggle-row">
+                        <div class="settings-toggle-info"><div class="settings-toggle-label" data-i18n="settings.enable_pace_alerts">Enable pace alerts</div></div>
+                        <label class="settings-toggle"><input type="checkbox" id="pace-enabled" checked><span class="settings-toggle-track"></span></label>
+                    </div>
+                    <div class="settings-field settings-field-half"><label for="pace-warning" data-i18n="settings.pace_warning">Warning deviation (percentage points)</label><input type="number" id="pace-warning" class="settings-input" min="0" max="100" step="1" value="10"></div>
+                    <div class="settings-field settings-field-half"><label for="pace-critical" data-i18n="settings.pace_critical">Critical deviation (percentage points)</label><input type="number" id="pace-critical" class="settings-input" min="0" max="100" step="1" value="20"></div>
+                    <div class="settings-field settings-field-half"><label for="workday-start" data-i18n="settings.workday_start">Workday starts</label><input type="time" id="workday-start" class="settings-input" value="09:00"></div>
+                    <div class="settings-field settings-field-half"><label for="workday-end" data-i18n="settings.workday_end">Workday ends</label><input type="time" id="workday-end" class="settings-input" value="18:00"></div>
+                    <div class="settings-field settings-field-half"><label for="lunch-start" data-i18n="settings.lunch_start">Lunch starts</label><input type="time" id="lunch-start" class="settings-input" value="12:00"></div>
+                    <div class="settings-field settings-field-half"><label for="lunch-minutes" data-i18n="settings.lunch_duration">Lunch duration (minutes)</label><input type="number" id="lunch-minutes" class="settings-input" min="0" max="240" value="60"></div>
+                    <div class="settings-field settings-field-half"><label for="workdays-per-week" data-i18n="settings.workdays_per_week">Workdays per week</label><input type="number" id="workdays-per-week" class="settings-input" min="1" max="7" value="5"></div>
+                </div>
+            </div>
+            <div class="settings-divider"></div>
+            <div class="settings-section">
                 <h3 class="settings-section-title" data-i18n="settings.notification_types">Notification Types</h3>
                 <div class="settings-fields">
                     <label class="settings-checkbox-row">
@@ -341,6 +359,20 @@
 
         <!-- General Panel -->
         <div class="settings-panel" id="panel-general" role="tabpanel" hidden>
+            <div class="settings-section">
+                <h3 class="settings-section-title" data-i18n="settings.system_update">System Update</h3>
+                <p class="settings-section-desc" data-i18n="settings.system_update_desc">Check for a new onWatch version and install it automatically.</p>
+                <div class="settings-fields system-version-grid">
+                    <div class="settings-field settings-field-half"><label data-i18n="settings.current_version">Current Version</label><div class="settings-readonly-value" id="settings-current-version">--</div></div>
+                    <div class="settings-field settings-field-half"><label data-i18n="settings.last_build_time">Last Updated</label><div class="settings-readonly-value" id="settings-build-time">--</div></div>
+                </div>
+                <div class="settings-actions">
+                    <button class="settings-test-btn" id="settings-update-check-btn" type="button"><span data-i18n="settings.check_update">Check for Updates</span></button>
+                    <button class="settings-save-btn settings-save-btn-secondary" id="settings-update-apply-btn" type="button" hidden><span data-i18n="settings.install_update">Install Update</span></button>
+                    <span class="settings-test-result" id="settings-update-result"></span>
+                </div>
+            </div>
+            <div class="settings-divider"></div>
             <div class="settings-section">
                 <h3 class="settings-section-title" data-i18n="settings.poll_interval">Quota Check Interval</h3>
                 <p class="settings-section-desc" data-i18n="settings.poll_interval_desc">Set how often all enabled providers are checked. The new interval takes effect after restarting onWatch.</p>

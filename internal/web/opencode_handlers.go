@@ -176,7 +176,52 @@ func (h *Handler) OpenCodeAccountsSummary(w http.ResponseWriter, r *http.Request
 		}
 		accounts = append(accounts, entry)
 	}
-	respondJSON(w, http.StatusOK, map[string]any{"accounts": accounts})
+	respondJSON(w, http.StatusOK, map[string]any{"accounts": accounts, "aggregate": buildOpenCodeSummaryAggregate(summaries)})
+}
+
+func buildOpenCodeSummaryAggregate(summaries []store.OpenCodeAccountSummary) map[string]any {
+	type quotaAccumulator struct {
+		total float64
+		count int
+	}
+	acc := make(map[string]quotaAccumulator)
+	sampledAccounts := 0
+	for _, summary := range summaries {
+		if summary.Snapshot == nil {
+			continue
+		}
+		sampledAccounts++
+		seen := make(map[string]bool)
+		for _, quota := range summary.Snapshot.Quotas {
+			if seen[quota.Name] {
+				continue
+			}
+			seen[quota.Name] = true
+			value := acc[quota.Name]
+			value.total += quota.Utilization
+			value.count++
+			acc[quota.Name] = value
+		}
+	}
+	names := make([]string, 0, len(acc))
+	for name := range acc {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool { return opencodeQuotaOrder(names[i]) < opencodeQuotaOrder(names[j]) })
+	quotas := make([]map[string]any, 0, len(names))
+	for _, name := range names {
+		value := acc[name]
+		if value.count == 0 {
+			continue
+		}
+		average := value.total / float64(value.count)
+		quotas = append(quotas, map[string]any{
+			"name": name, "displayName": opencodeDisplayName(name),
+			"averageUtilization": average, "utilization": average, "sampleCount": value.count,
+			"status": utilStatus(average),
+		})
+	}
+	return map[string]any{"accountCount": len(summaries), "sampledAccountCount": sampledAccounts, "quotas": quotas}
 }
 
 // SetOpenCodeTracker sets the OpenCode tracker for usage summary enrichment.
@@ -401,7 +446,6 @@ func (h *Handler) buildOpenCodeAggregateCurrent() map[string]interface{} {
 		return response
 	}
 	response["accountCount"] = len(summaries)
-	worst := make(map[string]api.OpenCodeQuota)
 	var latest time.Time
 	needsReauth := 0
 	for _, summary := range summaries {
@@ -414,31 +458,14 @@ func (h *Handler) buildOpenCodeAggregateCurrent() map[string]interface{} {
 		if summary.Snapshot.CapturedAt.After(latest) {
 			latest = summary.Snapshot.CapturedAt
 		}
-		for _, quota := range summary.Snapshot.Quotas {
-			if previous, ok := worst[quota.Name]; !ok || quota.Utilization > previous.Utilization {
-				worst[quota.Name] = quota
-			}
-		}
 	}
 	response["needsReauthCount"] = needsReauth
 	if !latest.IsZero() {
 		response["capturedAt"] = latest.Format(time.RFC3339)
 	}
-	names := make([]string, 0, len(worst))
-	for name := range worst {
-		names = append(names, name)
-	}
-	sort.Slice(names, func(i, j int) bool { return opencodeQuotaOrder(names[i]) < opencodeQuotaOrder(names[j]) })
-	quotas := make([]interface{}, 0, len(names))
-	for _, name := range names {
-		q := worst[name]
-		item := map[string]interface{}{"name": q.Name, "displayName": opencodeDisplayName(q.Name), "utilization": q.Utilization, "used": q.Used, "limit": q.Limit, "format": q.Format, "status": utilStatus(q.Utilization)}
-		if q.ResetsAt != nil {
-			item["resetsAt"] = q.ResetsAt.Format(time.RFC3339)
-		}
-		quotas = append(quotas, item)
-	}
-	response["quotas"] = quotas
+	aggregate := buildOpenCodeSummaryAggregate(summaries)
+	response["sampledAccountCount"] = aggregate["sampledAccountCount"]
+	response["quotas"] = aggregate["quotas"]
 	return response
 }
 
@@ -680,11 +707,17 @@ func (h *Handler) cyclesOpenCode(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) cycleOverviewOpenCode(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if h.store == nil {
-		respondJSON(w, http.StatusOK, []interface{}{})
+		respondJSON(w, http.StatusOK, map[string]interface{}{
+			"provider": "opencode", "groupBy": "five_hour",
+			"quotaNames": []string{}, "cycles": []interface{}{},
+		})
 		return
 	}
 
-	groupBy := r.URL.Query().Get("group_by")
+	groupBy := r.URL.Query().Get("groupBy")
+	if groupBy == "" {
+		groupBy = r.URL.Query().Get("group_by") // backward compatibility
+	}
 	if groupBy == "" {
 		groupBy = "five_hour"
 	}
@@ -694,14 +727,26 @@ func (h *Handler) cycleOverviewOpenCode(w http.ResponseWriter, r *http.Request) 
 		respondError(w, http.StatusBadRequest, accountErr.Error())
 		return
 	}
-	overview, err := h.store.QueryOpenCodeCycleOverviewForAccount(accountID, groupBy, 50)
+	overview, err := h.store.QueryOpenCodeCycleOverviewForAccount(accountID, groupBy, parseCycleOverviewLimit(r))
 	if err != nil {
 		h.logger.Error("failed to query OpenCode cycle overview", "error", err)
 		respondError(w, http.StatusInternalServerError, "failed to query cycle overview")
 		return
 	}
+	quotaNames, err := h.store.QueryAllOpenCodeQuotaNamesForAccount(accountID)
+	if err != nil {
+		h.logger.Error("failed to query OpenCode quota names", "error", err)
+		respondError(w, http.StatusInternalServerError, "failed to query quota names")
+		return
+	}
+	sort.SliceStable(quotaNames, func(i, j int) bool {
+		return opencodeQuotaOrder(quotaNames[i]) < opencodeQuotaOrder(quotaNames[j])
+	})
 
-	respondJSON(w, http.StatusOK, overview)
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"provider": "opencode", "groupBy": groupBy,
+		"quotaNames": quotaNames, "cycles": cycleOverviewRowsToJSON(overview),
+	})
 }
 
 func (h *Handler) summaryOpenCode(w http.ResponseWriter, r *http.Request) {

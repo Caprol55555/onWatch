@@ -32,6 +32,21 @@ type NotificationConfig struct {
 	Cooldown  time.Duration                // minimum time between notifications
 	Types     NotificationTypes            // which notification types are enabled
 	Channels  NotificationChannels         // which delivery channels are enabled
+	Pace      PaceConfig                   // work-schedule-aware weekly/monthly thresholds
+}
+
+// PaceConfig controls work-progress-based alerts for weekly and monthly quotas.
+// Thresholds are percentage points ahead of the expected working-time pace.
+type PaceConfig struct {
+	Enabled         bool    `json:"enabled"`
+	Warning         float64 `json:"warning_threshold"`
+	Critical        float64 `json:"critical_threshold"`
+	WorkdayStart    string  `json:"workday_start"`
+	LunchStart      string  `json:"lunch_start"`
+	LunchMinutes    int     `json:"lunch_minutes"`
+	WorkdayEnd      string  `json:"workday_end"`
+	WorkdaysPerWeek int     `json:"workdays_per_week"`
+	Timezone        string  `json:"-"`
 }
 
 // NotificationChannels controls which delivery channels are active.
@@ -66,6 +81,10 @@ type QuotaStatus struct {
 	Utilization   float64
 	Limit         float64
 	ResetOccurred bool
+	ResetsAt      *time.Time
+	PaceEvaluated bool
+	WorkProgress  float64
+	PaceDeviation float64
 }
 
 // New creates a new NotificationEngine with default configuration.
@@ -80,6 +99,7 @@ func New(s *store.Store, logger *slog.Logger) *NotificationEngine {
 			Cooldown:  30 * time.Minute,
 			Types:     NotificationTypes{Warning: true, Critical: true, Reset: false},
 			Channels:  NotificationChannels{Email: true, Push: true},
+			Pace:      PaceConfig{Enabled: true, Warning: 10, Critical: 20, WorkdayStart: "09:00", LunchStart: "12:00", LunchMinutes: 60, WorkdayEnd: "18:00", WorkdaysPerWeek: 5},
 		},
 	}
 }
@@ -124,6 +144,7 @@ type notificationSettingsJSON struct {
 	NotifyAuthError   bool                  `json:"notify_auth_error"`
 	CooldownMinutes   int                   `json:"cooldown_minutes"`
 	Channels          *NotificationChannels `json:"channels,omitempty"`
+	Pace              *PaceConfig           `json:"pace,omitempty"`
 	Overrides         []struct {
 		QuotaKey       string  `json:"quota_key"`
 		Provider       string  `json:"provider"`
@@ -141,6 +162,11 @@ type notificationSettingsJSON struct {
 func (e *NotificationEngine) Reload() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	timezoneValue := ""
+	if timezone, timezoneErr := e.store.GetSetting("timezone"); timezoneErr == nil {
+		timezoneValue = strings.TrimSpace(timezone)
+		e.cfg.Pace.Timezone = timezoneValue
+	}
 
 	v, err := e.store.GetSetting("notifications")
 	if err != nil || v == "" {
@@ -193,6 +219,10 @@ func (e *NotificationEngine) Reload() error {
 	} else {
 		// Default: both channels enabled
 		e.cfg.Channels = NotificationChannels{Email: true, Push: true}
+	}
+	if notif.Pace != nil {
+		e.cfg.Pace = normalizePaceConfig(*notif.Pace)
+		e.cfg.Pace.Timezone = timezoneValue
 	}
 
 	return nil
@@ -509,14 +539,24 @@ func (e *NotificationEngine) Check(status QuotaStatus) {
 		}
 	}
 
+	alertMetric := status.Utilization
+	if metric, progress, evaluated := quotaAlertMetric(status, cfg.Pace, time.Now()); evaluated && !hasOverride {
+		alertMetric = metric
+		warningThreshold = cfg.Pace.Warning
+		criticalThreshold = cfg.Pace.Critical
+		status.PaceEvaluated = true
+		status.WorkProgress = progress
+		status.PaceDeviation = metric
+	}
+
 	// Check critical first (higher priority)
-	if status.Utilization >= criticalThreshold && cfg.Types.Critical && !(hasOverride && override.DisableCrit) {
+	if alertMetric >= criticalThreshold && cfg.Types.Critical && !(hasOverride && override.DisableCrit) {
 		e.sendNotification(mailer, pushSender, cfg.Channels, status, "critical")
 		return
 	}
 
 	// Check warning
-	if status.Utilization >= warningThreshold && cfg.Types.Warning && !(hasOverride && override.DisableWarning) {
+	if alertMetric >= warningThreshold && cfg.Types.Warning && !(hasOverride && override.DisableWarning) {
 		e.sendNotification(mailer, pushSender, cfg.Channels, status, "warning")
 		return
 	}
@@ -674,6 +714,10 @@ func (e *NotificationEngine) buildBody(status QuotaStatus, notifType string) str
 	sb.WriteString(fmt.Sprintf("Provider: %s\n", status.Provider))
 	sb.WriteString(fmt.Sprintf("Quota: %s\n", status.QuotaKey))
 	sb.WriteString(fmt.Sprintf("Utilization: %.1f%%\n", status.Utilization))
+	if status.PaceEvaluated {
+		sb.WriteString(fmt.Sprintf("Work progress: %.1f%%\n", status.WorkProgress))
+		sb.WriteString(fmt.Sprintf("Pace deviation: %+.1f percentage points\n", status.PaceDeviation))
+	}
 	if status.Limit > 0 {
 		sb.WriteString(fmt.Sprintf("Limit: %.0f\n", status.Limit))
 	}

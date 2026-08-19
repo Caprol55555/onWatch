@@ -125,7 +125,7 @@ func (c *ZaiClient) FetchQuotas(ctx context.Context) (*ZaiQuotaResponse, error) 
 	}
 
 	// Handle Z.ai's unique error format: HTTP 200 with error code in body
-	if wrapper.Code == 401 {
+	if wrapper.Code == 401 || wrapper.Code == 1000 {
 		return nil, ErrZaiUnauthorized
 	}
 
@@ -147,6 +147,10 @@ func (c *ZaiClient) FetchQuotas(ctx context.Context) (*ZaiQuotaResponse, error) 
 			if limit.Type == "TIME_LIMIT" {
 				timeUsage = limit.CurrentValue
 			} else if limit.Type == "TOKENS_LIMIT" {
+				tokensUsage = limit.CurrentValue
+			} else if limit.Type == "CREDIT_LIMIT" && limit.Unit == 3 {
+				timeUsage = limit.CurrentValue
+			} else if limit.Type == "CREDIT_LIMIT" && limit.Unit == 6 {
 				tokensUsage = limit.CurrentValue
 			}
 		}

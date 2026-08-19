@@ -414,6 +414,13 @@ onwatch update    # Check for updates and self-update from CLI
 
 Or click the update badge in the dashboard footer when a new version is available.
 
+For read-only Docker deployments, do not mount the Docker socket into onWatch. Set
+`ONWATCH_UPDATE_REQUEST_PATH` to an absolute file inside the persistent `/data`
+mount instead. The Settings page then writes an atomic, mode-`0600` JSON request;
+a host-owned systemd path/timer can consume it and run the deployment's existing
+image pull, SQLite backup, health check, and rollback workflow. Without this host
+consumer, container image updates remain a host administration operation.
+
 **Under systemd**, the update is fully automatic - no manual restart needed. onWatch detects its systemd service via `/proc/self/cgroup`, fixes the unit file if needed (`Restart=always`), runs `systemctl daemon-reload`, and triggers `systemctl restart` for a clean lifecycle-managed restart.
 
 **Standalone mode** (macOS, or Linux without systemd) spawns the new binary, which takes over via PID file. If the spawn fails, onWatch automatically falls back to `systemctl restart` as a safety net.

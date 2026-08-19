@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -157,6 +158,71 @@ func TestOpenCodeCurrentIsAccountScopedAndSummaryIsCredentialSafe(t *testing.T) 
 	}
 	if strings.Contains(rr.Body.String(), "cookie-a") || strings.Contains(rr.Body.String(), "cookie-b") || strings.Contains(rr.Body.String(), "ciphertext") {
 		t.Fatalf("summary leaked credential: %s", rr.Body.String())
+	}
+}
+
+func TestOpenCodeAccountsSummaryIncludesAverageAggregateWithoutTreatingMissingAsZero(t *testing.T) {
+	t.Setenv("ONWATCH_CREDENTIAL_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	a, _ := s.CreateOpenCodeAccount("A", "ws-aggregate-a", "cookie-a", true)
+	b, _ := s.CreateOpenCodeAccount("B", "ws-aggregate-b", "cookie-b", true)
+	c, _ := s.CreateOpenCodeAccount("C", "ws-aggregate-c", "cookie-c", true)
+	now := time.Now().UTC()
+	for _, tc := range []struct {
+		id     int64
+		quotas []api.OpenCodeQuota
+	}{
+		{a.AccountID, []api.OpenCodeQuota{{Name: "five_hour", Utilization: 20}, {Name: "weekly", Utilization: 30}, {Name: "monthly", Utilization: 40}}},
+		{b.AccountID, []api.OpenCodeQuota{{Name: "five_hour", Utilization: 60}, {Name: "weekly", Utilization: 70}, {Name: "monthly", Utilization: 80}}},
+		{c.AccountID, []api.OpenCodeQuota{{Name: "five_hour", Utilization: 100}}},
+	} {
+		if _, err := s.InsertOpenCodeSnapshotForAccount(tc.id, &api.OpenCodeSnapshot{CapturedAt: now, Quotas: tc.quotas}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := NewHandler(s, nil, nil, nil, nil)
+	rr := httptest.NewRecorder()
+	h.OpenCodeAccountsSummary(rr, httptest.NewRequest(http.MethodGet, "/api/opencode/accounts/summary", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var payload struct {
+		Aggregate struct {
+			AccountCount        int `json:"accountCount"`
+			SampledAccountCount int `json:"sampledAccountCount"`
+			Quotas              []struct {
+				Name        string  `json:"name"`
+				Average     float64 `json:"averageUtilization"`
+				SampleCount int     `json:"sampleCount"`
+			} `json:"quotas"`
+		} `json:"aggregate"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Aggregate.AccountCount != 3 || payload.Aggregate.SampledAccountCount != 3 {
+		t.Fatalf("aggregate counts=%+v", payload.Aggregate)
+	}
+	want := map[string]struct {
+		avg     float64
+		samples int
+	}{"five_hour": {60, 3}, "weekly": {50, 2}, "monthly": {60, 2}}
+	for _, q := range payload.Aggregate.Quotas {
+		w, ok := want[q.Name]
+		if !ok {
+			continue
+		}
+		if q.Average != w.avg || q.SampleCount != w.samples {
+			t.Fatalf("quota %s=%+v want=%+v", q.Name, q, w)
+		}
+		delete(want, q.Name)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing aggregate quotas: %+v", want)
 	}
 }
 

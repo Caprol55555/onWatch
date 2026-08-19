@@ -176,11 +176,11 @@ function shouldShowSessionsTable(provider = getCurrentProvider()) {
 }
 
 function shouldShowCyclesTable(provider = getCurrentProvider()) {
-	return provider !== 'both' && provider !== 'api-integrations' && !isAccountsOverviewMode(provider);
+	return provider !== 'both' && provider !== 'api-integrations' && (!isAccountsOverviewMode(provider) || provider === 'opencode');
 }
 
 function shouldShowOverviewTable(provider = getCurrentProvider()) {
-	return provider !== 'both' && provider !== 'gemini' && provider !== 'api-integrations' && !isAccountsOverviewMode(provider);
+	return provider !== 'both' && provider !== 'gemini' && provider !== 'api-integrations' && (!isAccountsOverviewMode(provider) || provider === 'opencode');
 }
 
 function shouldShowHistoryTables(provider = getCurrentProvider()) {
@@ -3760,6 +3760,12 @@ function updateCard(quotaType, data, suffix) {
   const statusEl = document.getElementById(`status-${idSuffix}`);
   const resetEl = document.getElementById(`reset-${idSuffix}`);
   const countdownEl = document.getElementById(`countdown-${idSuffix}`);
+  const titleEl = document.getElementById(`title-${idSuffix}`);
+
+  if (titleEl && data.name) {
+    titleEl.removeAttribute('data-i18n');
+    titleEl.textContent = data.name;
+  }
 
   const displayPct = data.cardPercent != null ? data.cardPercent : (data.percent || 0);
 
@@ -4496,6 +4502,15 @@ async function fetchCurrent() {
         renderProviderDataState('quota-grid', data.hasData, 'Z.ai');
         setProviderDataSectionsVisible('zai', data.hasData);
         if (data.hasData) {
+          const toolCallsCard = document.querySelector('[data-quota="toolCalls"]');
+          const zaiGrid = document.getElementById('quota-grid');
+          const shortWindowCard = zaiGrid?.querySelector('[data-quota="timeLimit"]');
+          const longWindowCard = zaiGrid?.querySelector('[data-quota="tokensLimit"]');
+          if (zaiGrid && shortWindowCard && longWindowCard) {
+            if (data.codingPlan) zaiGrid.insertBefore(shortWindowCard, longWindowCard);
+            else zaiGrid.insertBefore(longWindowCard, shortWindowCard);
+          }
+          if (toolCallsCard) toolCallsCard.style.display = data.codingPlan ? 'none' : '';
           updateCard('tokensLimit', data.tokensLimit);
           updateCard('timeLimit', data.timeLimit);
           updateCard('toolCalls', data.toolCalls);
@@ -4692,7 +4707,31 @@ function accountOverviewCardHTML(provider, account, idx) {
 }
 
 // Build one compact, clickable summary card per account in the provider grid.
-function renderAccountsOverview(provider, accounts) {
+function openCodeAggregateCardHTML(aggregate) {
+  const quotas = Array.isArray(aggregate?.quotas) ? aggregate.quotas : [];
+  const wanted = ['five_hour', 'weekly', 'monthly'];
+  const byName = new Map(quotas.map(q => [q.name, q]));
+  const rows = wanted.map(name => byName.get(name)).filter(Boolean).map(q => {
+    const pct = Math.max(0, Math.min(100, Number(q.averageUtilization) || 0));
+    const label = localizedQuotaLabel(q.name, q.displayName || q.name);
+    return `<div class="account-overview-quota" data-quota="${escapeHTML(q.name)}">
+      <div class="aoq-top"><span class="aoq-label">${escapeHTML(label)}</span><span class="aoq-pct">${pct.toFixed(1)}%</span></div>
+      <div class="progress-bar" role="progressbar" aria-valuenow="${Math.round(pct)}" aria-valuemin="0" aria-valuemax="100">
+        <div class="progress-fill" style="width:${pct.toFixed(1)}%" data-status="${q.status || getQuotaStatus(pct)}"></div>
+      </div>
+      <div class="aoq-reset">${tr('opencode.aggregate_samples', { count: q.sampleCount || 0 })}</div>
+    </div>`;
+  }).join('');
+  return `<article class="account-overview-card opencode-aggregate-card" aria-label="${escapeHTML(tr('opencode.aggregate_title'))}">
+    <header class="account-overview-header">
+      <span class="account-overview-name">${tr('opencode.aggregate_title')}</span>
+      <span class="account-overview-badge">${tr('opencode.aggregate_accounts', { sampled: aggregate?.sampledAccountCount || 0, total: aggregate?.accountCount || 0 })}</span>
+    </header>
+    <div class="account-overview-quotas">${rows || `<p class="empty-state">${tr('common.no_quota_data')}</p>`}</div>
+  </article>`;
+}
+
+function renderAccountsOverview(provider, accounts, aggregate = null) {
   const container = document.getElementById(`quota-grid-${provider}`);
   if (!container) return;
 
@@ -4701,14 +4740,15 @@ function renderAccountsOverview(provider, accounts) {
     return;
   }
 
-  container.innerHTML = accounts.map((account, idx) => accountOverviewCardHTML(provider, account, idx)).join('');
+  const aggregateHTML = provider === 'opencode' && aggregate ? openCodeAggregateCardHTML(aggregate) : '';
+  container.innerHTML = aggregateHTML + accounts.map((account, idx) => accountOverviewCardHTML(provider, account, idx)).join('');
 
   const drill = (accountId) => {
     if (provider === 'minimax') switchMiniMaxAccount(accountId);
     else if (provider === 'opencode') switchOpenCodeAccount(accountId);
     else switchCodexProfile(accountId);
   };
-  container.querySelectorAll('.account-overview-card').forEach(card => {
+  container.querySelectorAll('.account-overview-card[data-account-id]').forEach(card => {
     const accountId = parseInt(card.dataset.accountId, 10);
     card.addEventListener('click', () => drill(accountId));
     card.addEventListener('keydown', (e) => {
@@ -4732,8 +4772,8 @@ async function fetchAccountsOverview(provider, requestSeq) {
       if (State.currentRequestSeq !== requestSeq) return;
       if (getCurrentProvider() !== provider) return;
       if (!isAccountsOverviewMode(provider)) return;
-      State.accountsOverview = { provider, accounts };
-      renderAccountsOverview(provider, accounts);
+      State.accountsOverview = { provider, accounts, aggregate: data.aggregate || null };
+      renderAccountsOverview(provider, accounts, data.aggregate || null);
       setLastUpdated();
       const statusDot = document.getElementById('status-dot');
       if (statusDot) statusDot.classList.remove('stale');
@@ -4781,6 +4821,22 @@ function buildOverviewWindows(provider, accounts) {
     if (hasWeekly) windows.push({ key: 'weekly', label: tr('quota.weekly'), extract: (d) => maxOver(d, k => k.startsWith('Wkly ')) });
     return windows;
   }
+  if (provider === 'opencode') {
+    const seen = new Map();
+    for (const account of accounts) {
+      for (const quota of account.quotas || []) {
+        if (!seen.has(quota.name)) seen.set(quota.name, localizedQuotaLabel(quota.name, quota.displayName || quota.name));
+      }
+    }
+    return [...seen.entries()].map(([key, label]) => ({
+      key,
+      label,
+      extract: (entry) => {
+        const quota = Array.isArray(entry.quotas) ? entry.quotas.find(q => q.name === key) : null;
+        return quota && typeof quota.utilization === 'number' ? quota.utilization : null;
+      },
+    }));
+  }
   // Codex: one window per distinct quota name across accounts. History entries
   // are keyed by the same normalized quota name.
   const seen = new Map();
@@ -4806,7 +4862,7 @@ async function renderMultiAccountChart(provider, range, requestSeq) {
   if (accounts.length === 0) {
     const endpoint = provider === 'minimax'
       ? `${API_BASE}/api/minimax/accounts/usage`
-      : `${API_BASE}/api/codex/accounts/usage`;
+      : (provider === 'opencode' ? `${API_BASE}/api/opencode/accounts/summary` : `${API_BASE}/api/codex/accounts/usage`);
     try {
       const res = await authFetch(endpoint);
       if (res.ok) {
@@ -7693,7 +7749,7 @@ async function fetchCycles() {
   // tagging every row with its account name for the combined table.
   if (isAccountsOverviewMode(provider)) {
     const rangeDays = Math.min(30, Math.max(1, Math.ceil(State.cyclesRange / (24 * 60 * 60 * 1000))));
-    const dynamicLimit = Math.min(50000, rangeDays * 24 * 60);
+    const dynamicLimit = provider === 'opencode' ? 500 : Math.min(50000, rangeDays * 24 * 60);
     const accounts = overviewAccounts(provider);
     const results = await Promise.all(accounts.map(async (acc) => {
       const url = `/api/logging-history?provider=${provider}&limit=${dynamicLimit}&range=${rangeDays}&account=${encodeURIComponent(acc.id)}`;
@@ -9269,7 +9325,7 @@ function renderOverviewTable() {
     const isPrimary = qn === State.overviewGroupBy;
     const displayName = getQuotaDisplayName(qn, overviewProv);
     const suffix = usePercent ? ' %' : '';
-    const maxIndicator = isPrimary ? ' Max' : '';
+    const maxIndicator = isPrimary ? ` ${tr('table.max')}` : '';
     headerHtml += `<th data-sort-key="cq_${qn}" role="button" tabindex="0" ${isPrimary ? 'class="overview-primary-col"' : ''}>${displayName}${maxIndicator}${suffix} <span class="sort-arrow"></span></th>`;
   });
   headerHtml += '</tr>';
@@ -9725,6 +9781,7 @@ async function initSettingsPage() {
   setupSettingsPassword();
   setupThresholdSliders();
   setupOverrides();
+  setupSystemUpdateSettings();
 }
 
 function activateSettingsTab(tabName) {
@@ -9828,6 +9885,19 @@ async function loadSettings() {
       setVal('settings-poll-interval', data.poll_interval_seconds);
     }
 
+    if (data.system) {
+      const versionEl = document.getElementById('settings-current-version');
+      const buildEl = document.getElementById('settings-build-time');
+      if (versionEl) versionEl.textContent = data.system.current_version || tr('common.unknown');
+      if (buildEl) buildEl.textContent = data.system.build_time ? formatDateTime(data.system.build_time) : tr('common.unknown');
+      if (data.system.update_mode === 'host_trigger') {
+        const applyBtn = document.getElementById('settings-update-apply-btn');
+        const updateResult = document.getElementById('settings-update-result');
+        if (applyBtn) { applyBtn.hidden = false; applyBtn.querySelector('span').textContent = tr('settings.execute_update'); }
+        if (updateResult) updateResult.textContent = tr('settings.host_managed_update');
+      }
+    }
+
     // SMTP
     if (data.smtp) {
       const s = data.smtp;
@@ -9865,6 +9935,16 @@ async function loadSettings() {
       const authErrorCheck = document.getElementById('notify-auth-error');
       if (authErrorCheck) authErrorCheck.checked = !!n.notify_auth_error;
       setVal('notify-cooldown', n.cooldown_minutes || 30);
+      const pace = n.pace || {};
+      const paceEnabled = document.getElementById('pace-enabled');
+      if (paceEnabled) paceEnabled.checked = pace.enabled !== false;
+      setVal('pace-warning', pace.warning_threshold ?? 10);
+      setVal('pace-critical', pace.critical_threshold ?? 20);
+      setVal('workday-start', pace.workday_start || '09:00');
+      setVal('workday-end', pace.workday_end || '18:00');
+      setVal('lunch-start', pace.lunch_start || '12:00');
+      setVal('lunch-minutes', pace.lunch_minutes ?? 60);
+      setVal('workdays-per-week', pace.workdays_per_week || 5);
       // Load channel preferences
       if (n.channels) {
         const emailToggle = document.getElementById('channel-email');
@@ -12030,6 +12110,16 @@ function gatherSettings() {
         email: document.getElementById('channel-email')?.checked ?? true,
         push: document.getElementById('channel-push')?.checked ?? true,
       },
+      pace: {
+        enabled: document.getElementById('pace-enabled')?.checked ?? true,
+        warning_threshold: parseFloat(document.getElementById('pace-warning')?.value) || 10,
+        critical_threshold: parseFloat(document.getElementById('pace-critical')?.value) || 20,
+        workday_start: document.getElementById('workday-start')?.value || '09:00',
+        workday_end: document.getElementById('workday-end')?.value || '18:00',
+        lunch_start: document.getElementById('lunch-start')?.value || '12:00',
+        lunch_minutes: parseInt(document.getElementById('lunch-minutes')?.value, 10) || 0,
+        workdays_per_week: parseInt(document.getElementById('workdays-per-week')?.value, 10) || 5,
+      },
       overrides: overrides,
     };
   }
@@ -12133,6 +12223,15 @@ function validateSettingsForAutoSave(settings, feedback) {
     showSettingsFeedback(feedback, tr('settings.menubar_threshold_order'), 'error');
     return false;
   }
+  const pace = settings.notifications?.pace;
+  if (pace && (pace.warning_threshold >= pace.critical_threshold
+      || pace.warning_threshold < 0 || pace.critical_threshold > 100
+      || pace.workdays_per_week < 1 || pace.workdays_per_week > 7
+      || pace.lunch_minutes < 0 || pace.lunch_minutes > 240
+      || pace.workday_start >= pace.workday_end)) {
+    showSettingsFeedback(feedback, tr('settings.pace_invalid'), 'error');
+    return false;
+  }
   if (!Number.isInteger(settings.poll_interval_seconds)
       || settings.poll_interval_seconds < 10
       || settings.poll_interval_seconds > 3600) {
@@ -12140,6 +12239,49 @@ function validateSettingsForAutoSave(settings, feedback) {
     return false;
   }
   return true;
+}
+
+function setupSystemUpdateSettings() {
+  const checkBtn = document.getElementById('settings-update-check-btn');
+  const applyBtn = document.getElementById('settings-update-apply-btn');
+  const result = document.getElementById('settings-update-result');
+  if (!checkBtn) return;
+
+  checkBtn.addEventListener('click', async () => {
+    checkBtn.disabled = true;
+    if (result) { result.textContent = tr('settings.checking_update'); result.className = 'settings-test-result'; }
+    try {
+      const response = await authFetch('/api/update/check');
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || tr('common.update_failed'));
+      if (data.available) {
+        if (result) { result.textContent = tr('settings.update_available', { version: data.latest_version }); result.className = 'settings-test-result success'; }
+        if (applyBtn) { applyBtn.hidden = false; applyBtn.dataset.version = data.latest_version || ''; }
+      } else {
+        if (result) { result.textContent = tr('settings.already_latest'); result.className = 'settings-test-result success'; }
+        if (applyBtn) applyBtn.hidden = true;
+      }
+    } catch (error) {
+      if (result) { result.textContent = error.message || tr('common.update_failed'); result.className = 'settings-test-result error'; }
+    } finally {
+      checkBtn.disabled = false;
+    }
+  });
+
+  applyBtn?.addEventListener('click', async () => {
+    applyBtn.disabled = true;
+    if (result) { result.textContent = tr('common.updating'); result.className = 'settings-test-result'; }
+    try {
+      const response = await authFetch('/api/update/apply', { method: 'POST' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || tr('common.update_failed'));
+      if (result) { result.textContent = tr('common.restarting'); result.className = 'settings-test-result success'; }
+      setTimeout(() => pollForRestart(), 2000);
+    } catch (error) {
+      if (result) { result.textContent = error.message || tr('common.update_failed'); result.className = 'settings-test-result error'; }
+      applyBtn.disabled = false;
+    }
+  });
 }
 
 function scheduleSettingsAutoSave(delay = 0) {

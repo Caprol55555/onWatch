@@ -37,11 +37,27 @@ import (
 var embeddedVersion string
 
 var version = "dev"
+var buildTime = ""
 
 func init() {
 	if version == "dev" {
 		version = strings.TrimSpace(embeddedVersion)
 	}
+}
+
+func effectiveBuildTime(injected string) string {
+	if value := strings.TrimSpace(injected); value != "" {
+		return value
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	info, err := os.Stat(executable)
+	if err != nil {
+		return ""
+	}
+	return info.ModTime().UTC().Format(time.RFC3339)
 }
 
 // dualHandler fans out log records to two slog handlers:
@@ -1448,6 +1464,7 @@ func run() error {
 
 	handler := web.NewHandler(db, tr, logger, nil, cfg, zaiTr)
 	handler.SetVersion(version)
+	handler.SetBuildTime(effectiveBuildTime(buildTime))
 	handler.SetNotifier(notifier)
 	if anthropicTr != nil {
 		handler.SetAnthropicTracker(anthropicTr)

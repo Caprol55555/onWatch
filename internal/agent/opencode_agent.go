@@ -114,6 +114,7 @@ func (a *OpenCodeAgent) poll(ctx context.Context) {
 				QuotaKey:    q.Name,
 				Utilization: q.Utilization,
 				Limit:       q.Limit,
+				ResetsAt:    q.ResetsAt,
 			})
 		}
 	}

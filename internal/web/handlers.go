@@ -116,6 +116,8 @@ type Handler struct {
 	config                           *config.Config
 	metrics                          *metrics.Metrics
 	version                          string
+	buildTime                        string
+	updateRequestPath                string
 	smtpTestMu                       sync.Mutex
 	smtpTestLastSent                 time.Time
 	pushTestMu                       sync.Mutex
@@ -712,15 +714,16 @@ func NewHandler(store *store.Store, tracker *tracker.Tracker, logger *slog.Logge
 	}
 
 	h := &Handler{
-		store:         store,
-		tracker:       tracker,
-		logger:        logger,
-		dashboardTmpl: dashboardTmpl,
-		loginTmpl:     loginTmpl,
-		settingsTmpl:  settingsTmpl,
-		sessions:      sessions,
-		config:        cfg,
-		metrics:       metrics.New(),
+		store:             store,
+		tracker:           tracker,
+		logger:            logger,
+		dashboardTmpl:     dashboardTmpl,
+		loginTmpl:         loginTmpl,
+		settingsTmpl:      settingsTmpl,
+		sessions:          sessions,
+		config:            cfg,
+		metrics:           metrics.New(),
+		updateRequestPath: strings.TrimSpace(os.Getenv("ONWATCH_UPDATE_REQUEST_PATH")),
 	}
 	if len(zaiTracker) > 0 && zaiTracker[0] != nil {
 		h.zaiTracker = zaiTracker[0]
@@ -737,6 +740,13 @@ func (h *Handler) SetVersion(v string) {
 		h.metrics.SetBuildInfo(v)
 	}
 }
+
+// SetBuildTime sets the immutable build timestamp injected by the release build.
+func (h *Handler) SetBuildTime(v string) { h.buildTime = strings.TrimSpace(v) }
+
+// SetUpdateRequestPath configures the safe container-to-host update trigger.
+// The host owns execution; onWatch only writes a small request file.
+func (h *Handler) SetUpdateRequestPath(path string) { h.updateRequestPath = strings.TrimSpace(path) }
 
 // SetAnthropicTracker sets the Anthropic tracker for usage summary enrichment.
 func (h *Handler) SetAnthropicTracker(t *tracker.AnthropicTracker) {
@@ -2523,6 +2533,14 @@ func (h *Handler) buildZaiCurrent() map[string]interface{} {
 			response["capturedAt"] = latest.CapturedAt.Format(time.RFC3339)
 			tokensResp := buildZaiTokensQuotaResponse(latest)
 			timeResp := buildZaiTimeQuotaResponse(latest)
+			codingPlan := latest.TimeUnit == 3 && latest.TokensUnit == 6
+			response["codingPlan"] = codingPlan
+			if codingPlan {
+				timeResp["name"] = "5-Hour Coding Plan"
+				timeResp["description"] = "Five-hour Coding Plan credit allowance"
+				tokensResp["name"] = "Weekly Coding Plan"
+				tokensResp["description"] = "Weekly Coding Plan credit allowance"
+			}
 
 			// Enrich with tracker data (rate, projection)
 			if h.zaiTracker != nil {
@@ -6688,6 +6706,11 @@ func (h *Handler) GetSettings(w http.ResponseWriter, r *http.Request) {
 		"menubar":               menubarSettings,
 		"auto_refresh_tokens":   autoRefreshTokens,
 		"poll_interval_seconds": pollIntervalSeconds,
+		"system": map[string]interface{}{
+			"current_version": h.version,
+			"build_time":      h.buildTime,
+			"update_mode":     map[bool]string{true: "host_trigger", false: "binary"}[h.updateRequestPath != ""],
+		},
 	}
 
 	// SMTP settings (never return the actual password)
@@ -6958,13 +6981,14 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 	// Handle notification settings
 	if raw, ok := body["notifications"]; ok {
 		var notif struct {
-			WarningThreshold  float64 `json:"warning_threshold"`
-			CriticalThreshold float64 `json:"critical_threshold"`
-			NotifyWarning     bool    `json:"notify_warning"`
-			NotifyCritical    bool    `json:"notify_critical"`
-			NotifyReset       bool    `json:"notify_reset"`
-			NotifyAuthError   bool    `json:"notify_auth_error"`
-			CooldownMinutes   int     `json:"cooldown_minutes"`
+			WarningThreshold  float64            `json:"warning_threshold"`
+			CriticalThreshold float64            `json:"critical_threshold"`
+			NotifyWarning     bool               `json:"notify_warning"`
+			NotifyCritical    bool               `json:"notify_critical"`
+			NotifyReset       bool               `json:"notify_reset"`
+			NotifyAuthError   bool               `json:"notify_auth_error"`
+			CooldownMinutes   int                `json:"cooldown_minutes"`
+			Pace              *notify.PaceConfig `json:"pace,omitempty"`
 			Overrides         []struct {
 				QuotaKey       string  `json:"quota_key"`
 				Provider       string  `json:"provider"`
@@ -6995,6 +7019,12 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if notif.CooldownMinutes < 1 {
 			notif.CooldownMinutes = 1
+		}
+		if notif.Pace != nil {
+			if err := notify.ValidatePaceConfig(*notif.Pace); err != nil {
+				respondError(w, http.StatusBadRequest, err.Error())
+				return
+			}
 		}
 		// Validate per-quota overrides
 		for _, o := range notif.Overrides {
@@ -7576,6 +7606,12 @@ func (h *Handler) CheckUpdate(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	if h.updateRequestPath != "" {
+		respondJSON(w, http.StatusOK, map[string]interface{}{
+			"available": true, "current_version": h.version, "latest_version": "main", "host_managed": true,
+		})
+		return
+	}
 	if h.updater == nil {
 		respondError(w, http.StatusServiceUnavailable, "updater not configured")
 		return
@@ -7593,6 +7629,15 @@ func (h *Handler) CheckUpdate(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ApplyUpdate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.updateRequestPath != "" {
+		if err := h.writeUpdateRequest(); err != nil {
+			h.logger.Error("host update request failed", "error", err)
+			respondError(w, http.StatusInternalServerError, "update request failed")
+			return
+		}
+		respondJSON(w, http.StatusAccepted, map[string]string{"status": "update_requested"})
 		return
 	}
 	if h.updater == nil {
@@ -7614,6 +7659,51 @@ func (h *Handler) ApplyUpdate(w http.ResponseWriter, r *http.Request) {
 			h.logger.Error("restart after update failed", "error", err)
 		}
 	}()
+}
+
+func (h *Handler) writeUpdateRequest() error {
+	requestPath := filepath.Clean(h.updateRequestPath)
+	if !filepath.IsAbs(requestPath) || filepath.Base(requestPath) == "." || filepath.Base(requestPath) == string(filepath.Separator) {
+		return fmt.Errorf("update request path must be an absolute file path")
+	}
+	parent := filepath.Dir(requestPath)
+	if info, err := os.Stat(parent); err != nil || !info.IsDir() {
+		return fmt.Errorf("update request directory is unavailable")
+	}
+	payload, err := json.Marshal(map[string]string{"requested_at": time.Now().UTC().Format(time.RFC3339), "current_version": h.version})
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(parent, ".onwatch-update-request-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(payload); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	// Hard-linking the fully flushed temporary file publishes it atomically and,
+	// unlike Rename on Unix, can never replace an existing host-owned request.
+	if err := os.Link(tmpPath, requestPath); err != nil {
+		if os.IsExist(err) {
+			return nil // an update is already queued
+		}
+		return err
+	}
+	return nil
 }
 
 // CycleOverview returns cycle overview with cross-quota data at peak moments.

@@ -83,6 +83,35 @@ func TestZaiClient_FetchQuotas_Unauthorized_HTTP200(t *testing.T) {
 	}
 }
 
+func TestZaiClient_FetchQuotas_CodingPlanAuthFailureCode1000(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"code": 1000, "msg": "Authentication failure", "success": false, "data": nil,
+		})
+	}))
+	defer server.Close()
+
+	client := NewZaiClient("invalid", slog.New(slog.NewTextHandler(io.Discard, nil)), WithZaiBaseURL(server.URL))
+	_, err := client.FetchQuotas(context.Background())
+	if !errors.Is(err, ErrZaiUnauthorized) {
+		t.Fatalf("code 1000 should be classified as unauthorized, got %v", err)
+	}
+}
+
+func TestZaiClient_FetchQuotas_CodingPlanCreditLimits(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(zaiCodingPlanResponse))
+	}))
+	defer server.Close()
+
+	client := NewZaiClient("valid", slog.New(slog.NewTextHandler(io.Discard, nil)), WithZaiBaseURL(server.URL))
+	resp, err := client.FetchQuotas(context.Background())
+	if err != nil || len(resp.Limits) != 2 {
+		t.Fatalf("Coding Plan connection should succeed: limits=%v err=%v", resp, err)
+	}
+}
+
 func TestZaiClient_FetchQuotas_APIError(t *testing.T) {
 	// Z.ai returns HTTP 200 with success=false for errors
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

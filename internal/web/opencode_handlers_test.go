@@ -98,7 +98,7 @@ func TestCyclesOpenCode_DefaultsToFiveHour(t *testing.T) {
 	}
 }
 
-func TestCycleOverviewOpenCode_DefaultsToFiveHour(t *testing.T) {
+func TestCycleOverviewOpenCodeUsesStandardEnvelopeAndRequestedGroup(t *testing.T) {
 	s, err := store.New(":memory:")
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
@@ -106,13 +106,13 @@ func TestCycleOverviewOpenCode_DefaultsToFiveHour(t *testing.T) {
 	defer s.Close()
 
 	now := time.Now().UTC()
-	reset := now.Add(5 * time.Hour)
-	if _, err := s.CreateOpenCodeCycle("five_hour", now, &reset); err != nil {
+	reset := now.AddDate(0, 1, 0)
+	if _, err := s.CreateOpenCodeCycle("monthly", now, &reset); err != nil {
 		t.Fatalf("CreateOpenCodeCycle: %v", err)
 	}
 
 	h := NewHandler(s, nil, nil, nil, createTestConfigWithOpenCode())
-	req := httptest.NewRequest(http.MethodGet, "/api/opencode/cycle-overview", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/cycle-overview?provider=opencode&groupBy=monthly", nil)
 	rec := httptest.NewRecorder()
 	h.cycleOverviewOpenCode(rec, req)
 
@@ -120,15 +120,26 @@ func TestCycleOverviewOpenCode_DefaultsToFiveHour(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 
-	var overview []map[string]interface{}
-	if err := json.Unmarshal(rec.Body.Bytes(), &overview); err != nil {
+	var payload struct {
+		Provider   string                   `json:"provider"`
+		GroupBy    string                   `json:"groupBy"`
+		QuotaNames []string                 `json:"quotaNames"`
+		Cycles     []map[string]interface{} `json:"cycles"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(overview) != 1 {
-		t.Fatalf("overview = %d, want 1", len(overview))
+	if payload.Provider != "opencode" || payload.GroupBy != "monthly" {
+		t.Fatalf("unexpected envelope: %+v", payload)
 	}
-	if got := overview[0]["QuotaType"]; got != "five_hour" {
-		t.Fatalf("QuotaType = %v, want five_hour", got)
+	if len(payload.Cycles) != 1 {
+		t.Fatalf("cycles = %d, want 1", len(payload.Cycles))
+	}
+	if got := payload.Cycles[0]["quotaType"]; got != "monthly" {
+		t.Fatalf("quotaType = %v, want monthly", got)
+	}
+	if len(payload.QuotaNames) != 1 || payload.QuotaNames[0] != "monthly" {
+		t.Fatalf("quotaNames = %v, want monthly", payload.QuotaNames)
 	}
 }
 

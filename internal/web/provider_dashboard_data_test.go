@@ -119,3 +119,42 @@ func TestZaiPendingStateHidesDataDependentDashboardSections(t *testing.T) {
 		t.Fatal("DeepSeek insights, trend, and history sections must be marked as data-dependent")
 	}
 }
+
+func TestBuildZaiCurrentLabelsCodingPlanCreditWindows(t *testing.T) {
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.InsertZaiSnapshot(&api.ZaiSnapshot{CapturedAt: time.Now().UTC(), TimeUnit: 3, TimeNumber: 5, TimeUsage: 1000, TimeCurrentValue: 250, TimePercentage: 25, TokensUnit: 6, TokensNumber: 1, TokensUsage: 5000, TokensCurrentValue: 2000, TokensPercentage: 40}); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(s, nil, nil, nil, &config.Config{ZaiAPIKey: "test"})
+	current := h.buildZaiCurrent()
+	if current["codingPlan"] != true {
+		t.Fatalf("expected Coding Plan marker: %#v", current)
+	}
+	if current["timeLimit"].(map[string]interface{})["name"] != "5-Hour Coding Plan" {
+		t.Fatalf("unexpected short-window label: %#v", current["timeLimit"])
+	}
+	if current["tokensLimit"].(map[string]interface{})["name"] != "Weekly Coding Plan" {
+		t.Fatalf("unexpected weekly label: %#v", current["tokensLimit"])
+	}
+}
+
+func TestOpenCodeAllAccountsUsesOpenCodeHistoryAndKeepsBoundedCombinedTables(t *testing.T) {
+	appJS := readStaticAppJS(t)
+	for _, expected := range []string{
+		"provider === 'opencode' ? `${API_BASE}/api/opencode/accounts/summary`",
+		"Array.isArray(entry.quotas) ? entry.quotas.find(q => q.name === key)",
+		"provider === 'opencode' ? 500",
+		"provider === 'opencode');",
+		"openCodeAggregateCardHTML",
+		".account-overview-card[data-account-id]",
+		"tr('table.max')",
+	} {
+		if !strings.Contains(appJS, expected) {
+			t.Fatalf("app.js missing OpenCode all-accounts behavior %q", expected)
+		}
+	}
+}

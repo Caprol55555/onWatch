@@ -345,6 +345,7 @@ func openCodeNotificationStatus(accountID int64, quota api.OpenCodeQuota) notify
 		AccountID:   strconv.FormatInt(accountID, 10),
 		Utilization: quota.Utilization,
 		Limit:       quota.Limit,
+		ResetsAt:    quota.ResetsAt,
 	}
 }
 

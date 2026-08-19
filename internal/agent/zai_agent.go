@@ -115,18 +115,27 @@ func (a *ZaiAgent) poll(ctx context.Context) {
 	// Check notification thresholds
 	if a.notifier != nil {
 		if snapshot.TokensUsage > 0 {
+			quotaKey := "tokens"
+			if snapshot.TimeUnit == 3 && snapshot.TokensUnit == 6 {
+				quotaKey = "weekly"
+			}
 			a.notifier.Check(notify.QuotaStatus{
 				Provider:    "zai",
-				QuotaKey:    "tokens",
+				QuotaKey:    quotaKey,
 				Utilization: float64(snapshot.TokensPercentage),
 				Limit:       snapshot.TokensUsage,
+				ResetsAt:    snapshot.TokensNextResetTime,
 			})
 		}
 		if snapshot.TimeUsage > 0 {
 			pct := (snapshot.TimeCurrentValue / snapshot.TimeUsage) * 100
+			quotaKey := "time"
+			if snapshot.TimeUnit == 3 && snapshot.TokensUnit == 6 {
+				quotaKey = "five_hour"
+			}
 			a.notifier.Check(notify.QuotaStatus{
 				Provider:    "zai",
-				QuotaKey:    "time",
+				QuotaKey:    quotaKey,
 				Utilization: pct,
 				Limit:       snapshot.TimeUsage,
 			})

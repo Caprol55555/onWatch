@@ -28,7 +28,7 @@ func (r *ZaiQuotaResponse) HasSupportedLimits() bool {
 		return false
 	}
 	for _, limit := range r.Limits {
-		if limit.Type == "TIME_LIMIT" || limit.Type == "TOKENS_LIMIT" {
+		if limit.Type == "TIME_LIMIT" || limit.Type == "TOKENS_LIMIT" || (limit.Type == "CREDIT_LIMIT" && (limit.Unit == 3 || limit.Unit == 6)) {
 			return true
 		}
 	}
@@ -135,6 +135,32 @@ func (r *ZaiQuotaResponse) ToSnapshot(capturedAt time.Time) *ZaiSnapshot {
 			if limit.NextResetMs != nil {
 				t := time.UnixMilli(*limit.NextResetMs)
 				snapshot.TokensNextResetTime = &t
+			}
+		case "CREDIT_LIMIT":
+			// Coding Plan V3 represents both the rolling five-hour allowance and
+			// the weekly allowance as CREDIT_LIMIT. Unit 3 is the short window;
+			// unit 6 is the weekly window. Reuse the existing bounded two-slot
+			// snapshot model so old TIME/TOKENS installations stay compatible.
+			if limit.Unit == 3 {
+				snapshot.TimeLimit = limit.Unit * limit.Number
+				snapshot.TimeUnit = limit.Unit
+				snapshot.TimeNumber = limit.Number
+				snapshot.TimeUsage = limit.Usage
+				snapshot.TimeCurrentValue = limit.CurrentValue
+				snapshot.TimeRemaining = limit.Remaining
+				snapshot.TimePercentage = limit.Percentage
+			} else if limit.Unit == 6 {
+				snapshot.TokensLimit = limit.Unit * limit.Number
+				snapshot.TokensUnit = limit.Unit
+				snapshot.TokensNumber = limit.Number
+				snapshot.TokensUsage = limit.Usage
+				snapshot.TokensCurrentValue = limit.CurrentValue
+				snapshot.TokensRemaining = limit.Remaining
+				snapshot.TokensPercentage = limit.Percentage
+				if limit.NextResetMs != nil {
+					t := time.UnixMilli(*limit.NextResetMs)
+					snapshot.TokensNextResetTime = &t
+				}
 			}
 		}
 	}

@@ -3853,6 +3853,28 @@ body.accounts-overview-mode #sessions-section {
   outline-offset: 2px;
 }
 
+.opencode-aggregate-card {
+  grid-column: 1 / -1;
+  cursor: default;
+  border-color: color-mix(in srgb, var(--accent-teal) 55%, var(--border-default));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent-teal) 16%, var(--surface-card)), color-mix(in srgb, #6366f1 10%, var(--surface-card)));
+}
+
+.opencode-aggregate-card:hover {
+  transform: none;
+  border-color: color-mix(in srgb, var(--accent-teal) 70%, var(--border-default));
+}
+
+.opencode-aggregate-card .account-overview-quotas {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 18px;
+}
+
+#settings-update-apply-btn[hidden] {
+  display: none !important;
+}
+
 .account-overview-header {
   display: flex;
   align-items: center;
