@@ -58,7 +58,7 @@ async function testOnWatchDashboard() {
     
     results.tests.push({
       name: 'Login Page Load',
-      status: 'PASS' if (usernameField && passwordField && loginButton) else 'FAIL',
+	  status: (usernameField && passwordField && loginButton) ? 'PASS' : 'FAIL',
       details: {
         hasUsernameField: !!usernameField,
         hasPasswordField: !!passwordField,

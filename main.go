@@ -715,6 +715,11 @@ func run() error {
 	migrateCodexProfiles()
 
 	// Open database
+	if restore, restoreErr := store.ApplyPendingRestore(cfg.DBPath); restoreErr != nil {
+		return fmt.Errorf("failed to apply pending database restore: %w", restoreErr)
+	} else if restore.Applied {
+		logger.Info("Applied verified database restore", "rollback_created", restore.RollbackPath != "")
+	}
 	db, err := store.New(cfg.DBPath)
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
@@ -1614,6 +1619,11 @@ func run() error {
 	// Setup signal handling
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	maintenanceDone := make(chan struct{})
+	go func() {
+		defer close(maintenanceDone)
+		runDatabaseMaintenance(ctx, db, logger)
+	}()
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -1705,6 +1715,9 @@ func run() error {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error("Server shutdown error", "error", err)
 	}
+
+	// Never close SQLite underneath a backup or retention transaction.
+	<-maintenanceDone
 
 	// Close database
 	if err := db.Close(); err != nil {
@@ -2070,6 +2083,63 @@ func runUpdate() error {
 	}
 
 	return nil
+}
+
+// runDatabaseMaintenance keeps storage growth bounded with one goroutine and
+// one small transaction per day. A verified backup is always created before
+// pruning; failures stop that day's maintenance instead of risking data loss.
+func runDatabaseMaintenance(ctx context.Context, db *store.Store, logger *slog.Logger) {
+	if db == nil {
+		return
+	}
+	run := func() {
+		if !db.MaintenanceDue(time.Now(), 24*time.Hour) {
+			logger.Debug("Scheduled database maintenance is not due")
+			return
+		}
+		policy := db.RetentionPolicy()
+		backup, err := db.CreateBackup(store.BackupReasonRetention)
+		if err != nil {
+			logger.Warn("Scheduled retention skipped because backup failed", "error", err)
+			return
+		}
+		report, err := db.RunRetention(policy, time.Now())
+		if err != nil {
+			_ = db.DeleteBackup(backup.Name)
+			logger.Warn("Scheduled retention failed", "error", err)
+			return
+		}
+		if err := db.Checkpoint(); err != nil {
+			logger.Warn("Scheduled WAL checkpoint failed", "error", err)
+		}
+		deletedBackups, err := db.PruneBackups(policy.BackupDays, time.Now())
+		if err != nil {
+			logger.Warn("Scheduled backup retention failed", "error", err)
+		}
+		if err := db.MarkMaintenanceCompleted(time.Now()); err != nil {
+			logger.Warn("Scheduled maintenance completion timestamp failed", "error", err)
+			return
+		}
+		logger.Info("Scheduled database maintenance complete", "backup", backup.Name, "deleted_rows", report.DeletedRows, "deleted_backups", deletedBackups)
+	}
+	initial := time.NewTimer(5 * time.Minute)
+	defer initial.Stop()
+	select {
+	case <-ctx.Done():
+		return
+	case <-initial.C:
+		run()
+	}
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			run()
+		}
+	}
 }
 
 func printBanner(cfg *config.Config, version string) {

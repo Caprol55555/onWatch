@@ -2618,7 +2618,6 @@ func buildZaiTokensQuotaResponse(snapshot *api.ZaiSnapshot) map[string]interface
 		"percent":     percent,
 		"status":      status,
 	}
-
 	if snapshot.TokensNextResetTime != nil {
 		timeUntilReset := time.Until(*snapshot.TokensNextResetTime)
 		result["renewsAt"] = snapshot.TokensNextResetTime.Format(time.RFC3339)
@@ -6699,6 +6698,10 @@ func (h *Handler) GetSettings(w http.ResponseWriter, r *http.Request) {
 	if h.store != nil {
 		autoRefreshTokens = h.store.AutoRefreshTokensEnabled()
 	}
+	schemaVersion := 0
+	if h.store != nil {
+		schemaVersion = h.store.SchemaVersion()
+	}
 
 	result := map[string]interface{}{
 		"timezone":              tz,
@@ -6710,7 +6713,13 @@ func (h *Handler) GetSettings(w http.ResponseWriter, r *http.Request) {
 			"current_version": h.version,
 			"build_time":      h.buildTime,
 			"update_mode":     map[bool]string{true: "host_trigger", false: "binary"}[h.updateRequestPath != ""],
+			"schema_version":  schemaVersion,
+			"image_digest":    strings.TrimSpace(os.Getenv("ONWATCH_IMAGE_DIGEST")),
 		},
+	}
+	if h.store != nil {
+		result["retention"] = h.store.RetentionPolicy()
+		result["alerts"] = h.store.AlertLifecyclePolicy()
 	}
 
 	// SMTP settings (never return the actual password)
@@ -6808,6 +6817,35 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result := map[string]interface{}{}
+
+	if raw, ok := body["retention"]; ok {
+		var policy store.RetentionPolicy
+		if err := json.Unmarshal(raw, &policy); err != nil {
+			respondError(w, http.StatusBadRequest, "invalid retention value")
+			return
+		}
+		policy = store.NormalizeRetentionPolicy(policy)
+		encoded, _ := json.Marshal(policy)
+		if err := h.store.SetSetting(store.SettingRetentionPolicy, string(encoded)); err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to save setting")
+			return
+		}
+		result["retention"] = policy
+	}
+	if raw, ok := body["alerts"]; ok {
+		var policy store.AlertLifecyclePolicy
+		if err := json.Unmarshal(raw, &policy); err != nil {
+			respondError(w, http.StatusBadRequest, "invalid alerts value")
+			return
+		}
+		policy = store.NormalizeAlertLifecyclePolicy(policy)
+		encoded, _ := json.Marshal(policy)
+		if err := h.store.SetSetting(store.SettingAlertLifecycle, string(encoded)); err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to save setting")
+			return
+		}
+		result["alerts"] = policy
+	}
 
 	// Handle the global provider quota polling interval. Agents use fixed,
 	// bounded tickers, so the new value is applied safely on the next restart.
@@ -7670,7 +7708,11 @@ func (h *Handler) writeUpdateRequest() error {
 	if info, err := os.Stat(parent); err != nil || !info.IsDir() {
 		return fmt.Errorf("update request directory is unavailable")
 	}
-	payload, err := json.Marshal(map[string]string{"requested_at": time.Now().UTC().Format(time.RFC3339), "current_version": h.version})
+	payload, err := json.Marshal(map[string]any{
+		"requested_at": time.Now().UTC().Format(time.RFC3339), "current_version": h.version,
+		"backup_required": true, "rollback_on_failure": true, "healthcheck_path": "/api/update/status",
+		"healthcheck_timeout_seconds": 120, "required_checks": []string{"http", "sqlite_integrity", "schema", "collectors_started"},
+	})
 	if err != nil {
 		return err
 	}
@@ -12082,6 +12124,7 @@ func (h *Handler) SystemAlerts(w http.ResponseWriter, r *http.Request) {
 		result = append(result, map[string]interface{}{
 			"id":        alert.ID,
 			"type":      alert.AlertType,
+			"status":    alert.Status,
 			"severity":  alert.Severity,
 			"title":     alert.Title,
 			"message":   alert.Message,

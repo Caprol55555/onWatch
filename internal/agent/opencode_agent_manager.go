@@ -318,6 +318,17 @@ func (m *OpenCodeAgentManager) pollAccount(parent context.Context, account store
 	if _, err := m.store.UpdateOpenCodeAccountPollState(account.AccountID, account.CredentialVersion, store.OpenCodeAuthValid, "", true, next); err != nil {
 		m.logger.Error("Failed to update OpenCode poll state", "account_id", account.AccountID, "error", err)
 	}
+	if err := m.store.ResetAuthFailure("opencode", strconv.FormatInt(account.AccountID, 10)); err != nil {
+		m.logger.Warn("Failed to clear OpenCode auth failure state", "account_id", account.AccountID, "error", err)
+	}
+	if m.notifier != nil {
+		policy := m.store.AlertLifecyclePolicy()
+		if confirmed, err := m.store.RecordAuthRecoverySuccess("opencode", strconv.FormatInt(account.AccountID, 10), policy.RecoveryConfirmations); err != nil {
+			m.logger.Warn("Failed to record OpenCode recovery confirmation", "account_id", account.AccountID, "error", err)
+		} else if confirmed {
+			m.notifier.ResolveAuthError("opencode", strconv.FormatInt(account.AccountID, 10), account.Name)
+		}
+	}
 	if m.notifier != nil {
 		for _, q := range snapshot.Quotas {
 			m.notifier.Check(openCodeNotificationStatus(account.AccountID, q))
@@ -350,26 +361,43 @@ func openCodeNotificationStatus(accountID int64, quota api.OpenCodeQuota) notify
 }
 
 func (m *OpenCodeAgentManager) handlePollError(account store.OpenCodeAccount, err error) {
+	accountID := strconv.FormatInt(account.AccountID, 10)
+	_ = m.store.ResetAuthRecovery("opencode", accountID)
 	status, code, terminal := store.OpenCodeAuthError, "fetch_error", false
+	confirmations := m.store.AlertLifecyclePolicy().FailureConfirmations
+	recordAuthFailure := func(errorCode string) bool {
+		confirmed, recordErr := m.store.RecordAuthFailure("opencode", accountID, errorCode, confirmations)
+		if recordErr != nil {
+			m.logger.Warn("Failed to record OpenCode auth failure confirmation", "account_id", account.AccountID, "error", recordErr)
+			return false
+		}
+		return confirmed
+	}
 	switch {
 	case errors.Is(err, api.ErrOpenCodeUnauthorized):
 		code = "unauthorized"
-		if account.ConsecutiveFailures >= 1 && account.LastErrorCode == code {
+		if recordAuthFailure(code) {
 			status, terminal = store.OpenCodeAuthNeedsReauth, true
 		}
 	case errors.Is(err, api.ErrOpenCodeForbidden):
 		code = "forbidden"
-		if account.ConsecutiveFailures >= 1 && account.LastErrorCode == code {
+		if recordAuthFailure(code) {
 			status, terminal = store.OpenCodeAuthUnauthorized, true
 		}
 	case errors.Is(err, context.DeadlineExceeded):
 		code = "timeout"
+		_ = m.store.ResetAuthFailure("opencode", accountID)
 	case errors.Is(err, api.ErrOpenCodeNetworkError):
 		code = "network"
+		_ = m.store.ResetAuthFailure("opencode", accountID)
 	case errors.Is(err, api.ErrOpenCodeServerError):
 		code = "server"
+		_ = m.store.ResetAuthFailure("opencode", accountID)
 	case errors.Is(err, api.ErrOpenCodeParseFailed):
 		code = "parse"
+		_ = m.store.ResetAuthFailure("opencode", accountID)
+	default:
+		_ = m.store.ResetAuthFailure("opencode", accountID)
 	}
 	next := time.Now().UTC().Add(m.backoff(account.ConsecutiveFailures + 1))
 	if terminal {

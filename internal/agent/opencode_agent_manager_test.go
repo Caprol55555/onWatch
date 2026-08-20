@@ -148,6 +148,49 @@ func TestOpenCodeAgentManagerRequiresConsecutiveAuthFailuresBeforeReauth(t *test
 	}
 }
 
+func TestOpenCodeAgentManagerResetsAuthConfirmationWhenFailureClassChanges(t *testing.T) {
+	t.Setenv("ONWATCH_CREDENTIAL_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.SetSetting(store.SettingAlertLifecycle, `{"failure_confirmations":3,"recovery_confirmations":2,"silence_minutes":60}`); err != nil {
+		t.Fatal(err)
+	}
+	account, err := s.CreateOpenCodeAccount("A", "changing-errors", "cookie", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewOpenCodeAgentManager(&concurrentOpenCodeFetcher{}, s, nil, time.Second, slog.Default())
+
+	apply := func(pollErr error) *store.OpenCodeAccount {
+		t.Helper()
+		current, getErr := s.GetOpenCodeAccount(account.AccountID, false)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		mgr.handlePollError(*current, pollErr)
+		updated, getErr := s.GetOpenCodeAccount(account.AccountID, false)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		return updated
+	}
+
+	apply(api.ErrOpenCodeUnauthorized)
+	apply(api.ErrOpenCodeNetworkError)
+	apply(api.ErrOpenCodeUnauthorized)
+	fourth := apply(api.ErrOpenCodeUnauthorized)
+	if fourth.AuthStatus == store.OpenCodeAuthNeedsReauth {
+		t.Fatalf("only two consecutive auth failures after a network error must remain retryable: %+v", fourth)
+	}
+	fifth := apply(api.ErrOpenCodeUnauthorized)
+	if fifth.AuthStatus != store.OpenCodeAuthNeedsReauth {
+		t.Fatalf("third consecutive auth failure must require reauthentication: %+v", fifth)
+	}
+}
+
 func TestOpenCodeNotificationStatusSeparatesAccountFromQuota(t *testing.T) {
 	status := openCodeNotificationStatus(42, api.OpenCodeQuota{Name: "weekly", Utilization: 61.5, Limit: 100})
 	if status.Provider != "opencode" || status.QuotaKey != "weekly" || status.AccountID != "42" {

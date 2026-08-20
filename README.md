@@ -401,6 +401,14 @@ All endpoints require authentication (session cookie or Basic Auth). Append `?pr
 | `/api/push/test`                | POST        | Send test push notification                    |
 | `/api/update/check`             | GET         | Check for new version                          |
 | `/api/update/apply`             | POST        | Download and apply update                      |
+| `/api/update/status`            | GET         | Version, schema, SQLite, and collector health  |
+| `/api/maintenance`              | GET         | Storage, retention, and backup status          |
+| `/api/maintenance/run`          | POST        | Verified backup and bounded retention run      |
+| `/api/backups`                  | GET/POST/DELETE | List, create, or delete SQLite backups      |
+| `/api/backups/download`         | GET         | Download one verified authenticated backup     |
+| `/api/backups/restore`          | POST        | Verify and stage a restart-time restore        |
+| `/api/collection/health`        | GET         | Latest provider/account collection health      |
+| `/api/collection/retry`         | POST        | Bounded provider retry                         |
 
 ---
 
@@ -426,6 +434,10 @@ consumer, container image updates remain a host administration operation.
 **Standalone mode** (macOS, or Linux without systemd) spawns the new binary, which takes over via PID file. If the spawn fails, onWatch automatically falls back to `systemctl restart` as a safety net.
 
 The binary validates downloaded updates by checking executable magic bytes (ELF, Mach-O, PE) before replacing itself.
+
+Database retention, verified backup/restore, collection health, alert lifecycle,
+and the managed-update health contract are documented in
+[Operations](docs/OPERATIONS.md).
 
 **If a self-update fails to restart**, the new binary is already on disk - just restart the service manually:
 

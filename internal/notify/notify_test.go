@@ -988,6 +988,26 @@ func TestNotificationEngine_ConfigurePush(t *testing.T) {
 	}
 }
 
+func TestResolveAuthErrorClosesIncidentAndCreatesOneRecoveryAlert(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+	if _, err := s.CreateSystemAlert("opencode", "token_refresh_failed", "认证失效", "需要更新 Cookie", "error", `{"account_id":"7"}`); err != nil {
+		t.Fatal(err)
+	}
+	engine := newTestEngine(t, s)
+
+	engine.ResolveAuthError("opencode", "7", "工作账号")
+	engine.ResolveAuthError("opencode", "7", "工作账号")
+
+	alerts, err := s.GetActiveSystemAlerts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(alerts) != 1 || alerts[0].AlertType != "auth_recovered" {
+		t.Fatalf("active alerts=%+v, want one recovery alert", alerts)
+	}
+}
+
 func TestNotificationEngine_GetVAPIDPublicKey_Empty(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)

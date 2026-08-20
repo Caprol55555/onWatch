@@ -275,10 +275,10 @@ func (h *Handler) OpenCodeAccountTest(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
 	if err := test(ctx, workspaceID, authCookie); err != nil {
-		respondJSON(w, http.StatusOK, map[string]interface{}{"success": false, "error": openCodeConnectionError(err)})
+		respondJSON(w, http.StatusOK, connectionTestPayload(openCodeConnectionError(err)))
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]interface{}{"success": true})
+	respondJSON(w, http.StatusOK, connectionTestPayload(""))
 }
 
 // MiniMaxAccountTest checks an unsaved API key and never persists it.
@@ -318,10 +318,10 @@ func (h *Handler) MiniMaxAccountTest(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
 	if err := test(ctx, strings.TrimSpace(req.APIKey), region); err != nil {
-		respondJSON(w, http.StatusOK, map[string]interface{}{"success": false, "error": miniMaxConnectionError(err)})
+		respondJSON(w, http.StatusOK, connectionTestPayload(miniMaxConnectionError(err)))
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]interface{}{"success": true})
+	respondJSON(w, http.StatusOK, connectionTestPayload(""))
 }
 
 func decodeStrictJSON(reader io.Reader, target interface{}) error {

@@ -828,7 +828,8 @@ func (e *NotificationEngine) SendAuthErrorNotification(alert AuthErrorAlert) boo
 	if !hasActive {
 		metadata := ""
 		if alert.AccountID != "" {
-			metadata = fmt.Sprintf(`{"account_id":"%s"}`, alert.AccountID)
+			encoded, _ := json.Marshal(map[string]string{"account_id": alert.AccountID})
+			metadata = string(encoded)
 		}
 		if _, err := e.store.CreateSystemAlert(
 			alert.Provider, alertType, alert.Title, alert.Message, severity, metadata,
@@ -837,6 +838,52 @@ func (e *NotificationEngine) SendAuthErrorNotification(alert AuthErrorAlert) boo
 		}
 	}
 
+	return sent
+}
+
+// ResolveAuthError closes matching dashboard alerts and sends one recovery
+// notification only when an open incident actually existed.
+func (e *NotificationEngine) ResolveAuthError(provider, accountID, accountName string) bool {
+	resolved, err := e.store.ResolveSystemAlertsForAccount(provider, accountID)
+	if err != nil {
+		e.logger.Error("failed to resolve auth alert", "provider", provider, "error", err)
+		return false
+	}
+	if resolved == 0 {
+		return false
+	}
+	e.mu.RLock()
+	cfg, mailer, pushSender := e.cfg, e.mailer, e.pushSender
+	e.mu.RUnlock()
+	subject := fmt.Sprintf("[已恢复] %s 认证已恢复", titleCase(provider))
+	message := fmt.Sprintf("账号 %s 的认证已恢复，额度采集已继续。", accountName)
+	sent := false
+	if cfg.Channels.Email && mailer != nil {
+		if err := mailer.Send(subject, message); err != nil {
+			e.logger.Error("failed to send recovery email", "provider", provider, "error", err)
+		} else {
+			sent = true
+		}
+	}
+	if cfg.Channels.Push && pushSender != nil {
+		if subs, err := e.store.GetPushSubscriptions(); err == nil {
+			for _, sub := range subs {
+				ps := PushSubscription{Endpoint: sub.Endpoint}
+				ps.Keys.P256dh, ps.Keys.Auth = sub.P256dh, sub.Auth
+				if err := pushSender.Send(ps, subject, message); err != nil {
+					e.logger.Error("failed to send recovery push", "provider", provider, "endpoint", pushEndpointLogLabel(sub.Endpoint), "error", pushErrorLogText(err))
+				} else {
+					sent = true
+				}
+			}
+		}
+	}
+	metadata := ""
+	if accountID != "" {
+		encoded, _ := json.Marshal(map[string]string{"account_id": accountID})
+		metadata = string(encoded)
+	}
+	_, _ = e.store.CreateSystemAlert(provider, "auth_recovered", "认证已恢复", message, "info", metadata)
 	return sent
 }
 

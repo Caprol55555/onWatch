@@ -195,9 +195,11 @@ func TestOpenCodeAccountsSummaryIncludesAverageAggregateWithoutTreatingMissingAs
 			AccountCount        int `json:"accountCount"`
 			SampledAccountCount int `json:"sampledAccountCount"`
 			Quotas              []struct {
-				Name        string  `json:"name"`
-				Average     float64 `json:"averageUtilization"`
-				SampleCount int     `json:"sampleCount"`
+				Name           string  `json:"name"`
+				Average        float64 `json:"averageUtilization"`
+				SampleCount    int     `json:"sampleCount"`
+				MaxUtilization float64 `json:"maxUtilization"`
+				WorstAccount   string  `json:"worstAccount"`
 			} `json:"quotas"`
 		} `json:"aggregate"`
 	}
@@ -210,13 +212,15 @@ func TestOpenCodeAccountsSummaryIncludesAverageAggregateWithoutTreatingMissingAs
 	want := map[string]struct {
 		avg     float64
 		samples int
-	}{"five_hour": {60, 3}, "weekly": {50, 2}, "monthly": {60, 2}}
+		max     float64
+		worst   string
+	}{"five_hour": {60, 3, 100, "C"}, "weekly": {50, 2, 70, "B"}, "monthly": {60, 2, 80, "B"}}
 	for _, q := range payload.Aggregate.Quotas {
 		w, ok := want[q.Name]
 		if !ok {
 			continue
 		}
-		if q.Average != w.avg || q.SampleCount != w.samples {
+		if q.Average != w.avg || q.SampleCount != w.samples || q.MaxUtilization != w.max || q.WorstAccount != w.worst {
 			t.Fatalf("quota %s=%+v want=%+v", q.Name, q, w)
 		}
 		delete(want, q.Name)

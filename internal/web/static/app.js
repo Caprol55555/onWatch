@@ -4741,6 +4741,7 @@ function openCodeAggregateCardHTML(aggregate) {
         ${quotaThresholdMarkersHTML(q)}
       </div>
       <div class="aoq-reset">${tr('opencode.aggregate_samples', { count: q.sampleCount || 0 })}</div>
+      <div class="aoq-reset">${escapeHTML(tr('opencode.aggregate_risk', { max: (Number(q.maxUtilization) || 0).toFixed(1), account: q.worstAccount || tr('common.unknown'), risk: Number(q.atRiskAccountCount) || 0, projected: (Number(q.averageProjectedUtilization) || pct).toFixed(1) }))}</div>
     </div>`;
   }).join('');
   return `<article class="account-overview-card opencode-aggregate-card" aria-label="${escapeHTML(tr('opencode.aggregate_title'))}">
@@ -9898,6 +9899,7 @@ async function initSettingsPage() {
   setupThresholdSliders();
   setupOverrides();
   setupSystemUpdateSettings();
+  setupOperationsSettings();
 }
 
 function activateSettingsTab(tabName) {
@@ -10000,12 +10002,28 @@ async function loadSettings() {
     if (Number.isInteger(data.poll_interval_seconds)) {
       setVal('settings-poll-interval', data.poll_interval_seconds);
     }
+	if (data.retention) {
+	  setVal('retention-snapshot-days', data.retention.snapshot_days);
+	  setVal('retention-cycle-days', data.retention.cycle_days);
+	  setVal('retention-alert-days', data.retention.alert_days);
+	  setVal('retention-backup-days', data.retention.backup_days);
+	  setVal('retention-batch-size', data.retention.batch_size);
+	}
+	if (data.alerts) {
+	  setVal('alerts-failure-confirmations', data.alerts.failure_confirmations);
+	  setVal('alerts-recovery-confirmations', data.alerts.recovery_confirmations);
+	  setVal('alerts-silence-minutes', data.alerts.silence_minutes);
+	}
 
     if (data.system) {
       const versionEl = document.getElementById('settings-current-version');
       const buildEl = document.getElementById('settings-build-time');
       if (versionEl) versionEl.textContent = data.system.current_version || tr('common.unknown');
       if (buildEl) buildEl.textContent = data.system.build_time ? formatDateTime(data.system.build_time) : tr('common.unknown');
+	  const schemaEl = document.getElementById('settings-schema-version');
+	  const digestEl = document.getElementById('settings-image-digest');
+	  if (schemaEl) schemaEl.textContent = String(data.system.schema_version ?? 0);
+	  if (digestEl) digestEl.textContent = data.system.image_digest || tr('common.unknown');
       if (data.system.update_mode === 'host_trigger') {
         const applyBtn = document.getElementById('settings-update-apply-btn');
         const updateResult = document.getElementById('settings-update-result');
@@ -10562,6 +10580,8 @@ const DEFAULT_PROVIDER_TAB_LABELS = {
   cursor: 'Cursor',
   grok: 'Grok',
   kimi: 'Kimi',
+  moonshot: 'Moonshot',
+  deepseek: 'DeepSeek',
   opencode: 'OpenCode',
   'api-integrations': 'API Integrations',
   both: 'All',
@@ -12284,6 +12304,22 @@ function gatherSettings() {
     settings.poll_interval_seconds = parseInt(pollInterval.value, 10);
   }
 
+	const snapshotDays = document.getElementById('retention-snapshot-days');
+	if (snapshotDays) {
+	  settings.retention = {
+		snapshot_days: parseInt(snapshotDays.value, 10),
+		cycle_days: parseInt(document.getElementById('retention-cycle-days')?.value, 10),
+		alert_days: parseInt(document.getElementById('retention-alert-days')?.value, 10),
+		backup_days: parseInt(document.getElementById('retention-backup-days')?.value, 10),
+		batch_size: parseInt(document.getElementById('retention-batch-size')?.value, 10),
+	  };
+	  settings.alerts = {
+		failure_confirmations: parseInt(document.getElementById('alerts-failure-confirmations')?.value, 10),
+		recovery_confirmations: parseInt(document.getElementById('alerts-recovery-confirmations')?.value, 10),
+		silence_minutes: parseInt(document.getElementById('alerts-silence-minutes')?.value, 10),
+	  };
+	}
+
   // Global display mode goes under provider_settings.global. Other provider
   // settings (API keys, tokens, etc.) are still saved via the per-provider
   // modal because the server strips sensitive keys from the GET response;
@@ -12357,11 +12393,85 @@ function validateSettingsForAutoSave(settings, feedback) {
   return true;
 }
 
+async function loadOperationsStatus() {
+  const stats = document.getElementById('maintenance-stats');
+  const backupBody = document.getElementById('backup-list');
+  const healthBody = document.getElementById('collection-health-list');
+  if (!stats || !backupBody || !healthBody) return;
+  try {
+    const [maintenanceRes, healthRes] = await Promise.all([
+      authFetch(`${API_BASE}/api/maintenance`), authFetch(`${API_BASE}/api/collection/health`),
+    ]);
+    if (!maintenanceRes.ok || !healthRes.ok) throw new Error('operations unavailable');
+    const [maintenance, health] = await Promise.all([maintenanceRes.json(), healthRes.json()]);
+    const database = maintenance.database || {};
+    stats.innerHTML = `
+      <div class="api-integrations-health-item"><span class="api-integrations-health-label">${tr('operations.database_size')}</span><span class="api-integrations-health-value">${formatBytes(database.database_bytes || 0)}</span></div>
+      <div class="api-integrations-health-item"><span class="api-integrations-health-label">${tr('operations.wal_size')}</span><span class="api-integrations-health-value">${formatBytes(database.wal_bytes || 0)}</span></div>
+      <div class="api-integrations-health-item"><span class="api-integrations-health-label">${tr('operations.free_pages')}</span><span class="api-integrations-health-value">${formatNumber(database.free_pages || 0)}</span></div>`;
+    const backups = Array.isArray(maintenance.backups) ? maintenance.backups : [];
+    const backupReasonLabel = (reason) => ({ manual: tr('operations.backup_reason_manual'), retention: tr('operations.backup_reason_retention'), 'pre-restore': tr('operations.backup_reason_pre_restore') }[reason] || tr('common.unknown'));
+    const collectionErrorLabel = (code) => ({ unauthorized: tr('operations.error_unauthorized'), forbidden: tr('operations.error_forbidden'), timeout: tr('operations.error_timeout'), network: tr('operations.error_network'), server: tr('operations.error_server'), parse: tr('operations.error_parse'), fetch_error: tr('operations.error_fetch') }[code] || tr('status.error'));
+    backupBody.innerHTML = backups.map(item => `<tr>
+	  <td>${escapeHTML(formatDateTime(item.created_at))}</td><td>${escapeHTML(formatBytes(item.size_bytes || 0))}</td><td>${escapeHTML(backupReasonLabel(item.reason))}</td>
+	  <td><a class="settings-test-btn" href="${API_BASE}/api/backups/download?name=${encodeURIComponent(item.name)}">${tr('operations.download')}</a> <button class="settings-test-btn operations-restore" type="button" data-name="${escapeHTML(item.name)}">${tr('operations.restore')}</button> <button class="settings-test-btn operations-delete" type="button" data-name="${escapeHTML(item.name)}">${tr('operations.delete')}</button></td>
+    </tr>`).join('');
+    const items = Array.isArray(health.items) ? health.items : [];
+    healthBody.innerHTML = items.map(item => `<tr>
+	  <td>${escapeHTML(defaultProviderTabLabel(item.provider))}</td><td>${escapeHTML(item.account_name || '—')}</td><td><span class="status-badge" data-status="${!item.configured ? 'disabled' : (item.status === 'stale' ? 'warning' : (item.status === 'stopped' ? 'disabled' : escapeHTML(item.status || 'pending')))}">${escapeHTML(!item.configured ? tr('common.not_configured') : (['stale', 'stopped'].includes(item.status) ? tr(`status.${item.status}`) : translatedAuthStatus(item.status)))}</span>${item.error_code ? `<div class="aoq-reset">${escapeHTML(collectionErrorLabel(item.error_code))}</div>` : ''}</td>
+      <td>${item.last_success_at ? escapeHTML(formatDateTime(item.last_success_at)) : '—'}</td><td>${formatNumber(item.consecutive_failures || 0)}</td>
+	  <td>${item.configured && item.enabled ? `<button class="settings-test-btn operations-retry" type="button" data-provider="${escapeHTML(item.provider)}">${tr('operations.retry')}</button>` : '—'}</td>
+    </tr>`).join('');
+  } catch (_) {
+    showToast(tr('operations.operation_failed'), 'error');
+  }
+}
+
+function setupOperationsSettings() {
+  if (!document.getElementById('maintenance-stats')) return;
+  loadOperationsStatus();
+  document.getElementById('maintenance-refresh')?.addEventListener('click', loadOperationsStatus);
+  document.getElementById('maintenance-run')?.addEventListener('click', async (event) => {
+    const button = event.currentTarget; button.disabled = true;
+    try { const response = await authFetch(`${API_BASE}/api/maintenance/run`, { method: 'POST' }); if (!response.ok) throw new Error(); showToast(tr('operations.maintenance_done'), 'success'); await loadOperationsStatus(); }
+    catch (_) { showToast(tr('operations.operation_failed'), 'error'); } finally { button.disabled = false; }
+  });
+  document.getElementById('backup-create')?.addEventListener('click', async (event) => {
+    const button = event.currentTarget; button.disabled = true;
+    try { const response = await authFetch(`${API_BASE}/api/backups`, { method: 'POST' }); if (!response.ok) throw new Error(); showToast(tr('operations.backup_created'), 'success'); await loadOperationsStatus(); }
+    catch (_) { showToast(tr('operations.operation_failed'), 'error'); } finally { button.disabled = false; }
+  });
+  document.getElementById('backup-list')?.addEventListener('click', async (event) => {
+    const button = event.target.closest('button'); if (!button) return;
+    button.disabled = true;
+    try {
+      if (button.classList.contains('operations-restore')) {
+		if (!confirm(tr('operations.restore_confirm'))) { button.disabled = false; return; }
+        const response = await authFetch(`${API_BASE}/api/backups/restore`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: button.dataset.name }) });
+        if (!response.ok) throw new Error(); showToast(tr('operations.restore_staged'), 'success');
+      } else if (button.classList.contains('operations-delete')) {
+		if (!confirm(tr('operations.delete_confirm'))) { button.disabled = false; return; }
+        const response = await authFetch(`${API_BASE}/api/backups?name=${encodeURIComponent(button.dataset.name)}`, { method: 'DELETE' });
+        if (!response.ok) throw new Error(); await loadOperationsStatus();
+      }
+    } catch (_) { showToast(tr('operations.operation_failed'), 'error'); } finally { button.disabled = false; }
+  });
+  document.getElementById('collection-health-list')?.addEventListener('click', async (event) => {
+    const button = event.target.closest('.operations-retry'); if (!button) return; button.disabled = true;
+    try { const response = await authFetch(`${API_BASE}/api/collection/retry`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: button.dataset.provider }) }); if (!response.ok) throw new Error(); showToast(tr('settings.reload_success'), 'success'); setTimeout(loadOperationsStatus, 1000); }
+    catch (_) { showToast(tr('operations.operation_failed'), 'error'); } finally { button.disabled = false; }
+  });
+}
+
 function setupSystemUpdateSettings() {
   const checkBtn = document.getElementById('settings-update-check-btn');
   const applyBtn = document.getElementById('settings-update-apply-btn');
   const result = document.getElementById('settings-update-result');
   if (!checkBtn) return;
+	authFetch(`${API_BASE}/api/update/status`).then(response => response.ok ? response.json() : null).then(data => {
+	  const health = document.getElementById('settings-update-health'); if (!health || !data) return;
+	  health.textContent = `${tr('operations.update_health')}: ${data.healthy ? tr('status.healthy') : tr('status.error')} · SQLite ${data.sqlite ? tr('status.healthy') : tr('status.error')} · ${tr('operations.collectors_running', { count: data.collectors_running || 0 })}`;
+	}).catch(() => {});
 
   checkBtn.addEventListener('click', async () => {
     checkBtn.disabled = true;
@@ -13039,6 +13149,11 @@ function renderNotificationItem(alert) {
           <span class="notification-provider">${escapeHtml(alert.provider || 'system')}</span>
           <span class="notification-time">${formatRelativeTime(alert.createdAt)}</span>
         </div>
+		<div class="notification-lifecycle-actions">
+		  ${alert.status !== 'acknowledged' ? `<button class="notification-action" data-alert-action="acknowledge" data-alert-id="${alert.id}">${tr('notifications.acknowledge')}</button>` : ''}
+		  <button class="notification-action" data-alert-action="silence" data-alert-id="${alert.id}">${tr('notifications.silence')}</button>
+		  <button class="notification-action" data-alert-action="resolve" data-alert-id="${alert.id}">${tr('notifications.resolve')}</button>
+		</div>
       </div>
       <button class="notification-dismiss" data-dismiss-id="${alert.id}" title="${tr('notifications.dismiss')}" aria-label="${tr('notifications.dismiss_aria')}">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -13087,6 +13202,13 @@ async function updateNotificationCenter() {
         await dismissAlert(id);
       });
     });
+	list.querySelectorAll('.notification-action').forEach(btn => {
+	  btn.addEventListener('click', async (e) => {
+		e.stopPropagation();
+		const response = await authFetch('/api/alerts/action', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: parseInt(btn.dataset.alertId, 10), action: btn.dataset.alertAction }) });
+		if (response.ok) await updateNotificationCenter(); else showToast(tr('operations.operation_failed'), 'error');
+	  });
+	});
   }
 }
 

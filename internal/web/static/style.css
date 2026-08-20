@@ -4321,6 +4321,28 @@ body.accounts-overview-mode #sessions-section {
   transition: all var(--transition-fast);
 }
 
+.notification-lifecycle-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.notification-action {
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  background: var(--surface-card-alt);
+  color: var(--text-secondary);
+  padding: 4px 9px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.notification-action:hover { color: var(--primary); border-color: var(--primary); }
+
 .notification-dismiss:focus {
   outline: none;
   opacity: 1;

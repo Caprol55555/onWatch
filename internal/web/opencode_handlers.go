@@ -185,11 +185,17 @@ func (h *Handler) OpenCodeAccountsSummary(w http.ResponseWriter, r *http.Request
 
 func (h *Handler) buildOpenCodeSummaryAggregate(summaries []store.OpenCodeAccountSummary, paceCfg notify.PaceConfig, now time.Time) map[string]any {
 	type quotaAccumulator struct {
-		total         float64
-		count         int
-		warningTotal  float64
-		criticalTotal float64
-		markerCount   int
+		total            float64
+		count            int
+		warningTotal     float64
+		criticalTotal    float64
+		markerCount      int
+		maxUtilization   float64
+		worstAccount     string
+		atRiskCount      int
+		projectedTotal   float64
+		projectedCount   int
+		exhaustRiskCount int
 	}
 	acc := make(map[string]quotaAccumulator)
 	sampledAccounts := 0
@@ -207,12 +213,34 @@ func (h *Handler) buildOpenCodeSummaryAggregate(summaries []store.OpenCodeAccoun
 			value := acc[quota.Name]
 			value.total += quota.Utilization
 			value.count++
+			if quota.Utilization >= value.maxUtilization {
+				value.maxUtilization, value.worstAccount = quota.Utilization, summary.Account.Name
+			}
 			if quota.ResetsAt != nil {
 				warning, critical, _, ok := notify.PaceMarkers(quota.Name, *quota.ResetsAt, paceCfg, now)
 				if ok {
 					value.warningTotal += warning
 					value.criticalTotal += critical
 					value.markerCount++
+					if quota.Utilization >= warning {
+						value.atRiskCount++
+					}
+				}
+			}
+			if h.opencodeTracker != nil {
+				if usage, err := h.opencodeTracker.UsageSummaryForAccount(summary.Account.AccountID, quota.Name); err == nil && usage != nil {
+					projected := usage.ProjectedUtil
+					if projected < quota.Utilization {
+						projected = quota.Utilization
+					}
+					if projected > 100 {
+						projected = 100
+					}
+					value.projectedTotal += projected
+					value.projectedCount++
+					if projected >= 100 {
+						value.exhaustRiskCount++
+					}
 				}
 			}
 			acc[quota.Name] = value
@@ -233,7 +261,12 @@ func (h *Handler) buildOpenCodeSummaryAggregate(summaries []store.OpenCodeAccoun
 		item := map[string]any{
 			"name": name, "displayName": opencodeDisplayName(name),
 			"averageUtilization": average, "utilization": average, "sampleCount": value.count,
-			"status": utilStatus(average),
+			"status":         utilStatus(average),
+			"maxUtilization": value.maxUtilization, "worstAccount": value.worstAccount,
+			"atRiskAccountCount": value.atRiskCount, "exhaustRiskAccountCount": value.exhaustRiskCount,
+		}
+		if value.projectedCount > 0 {
+			item["averageProjectedUtilization"] = value.projectedTotal / float64(value.projectedCount)
 		}
 		if value.markerCount > 0 {
 			item["paceWarningMarker"] = value.warningTotal / float64(value.markerCount)

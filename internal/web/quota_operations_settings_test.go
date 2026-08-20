@@ -80,7 +80,7 @@ func TestContainerUpdateUsesHostTriggerWithoutExecutingCommands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(payload), `"current_version":"2.13.3-caprol.abcdef0"`) || strings.Contains(string(payload), "docker") {
+	if !strings.Contains(string(payload), `"current_version":"2.13.3-caprol.abcdef0"`) || !strings.Contains(string(payload), `"backup_required":true`) || !strings.Contains(string(payload), `"rollback_on_failure":true`) || !strings.Contains(string(payload), `"healthcheck_path":"/api/update/status"`) || strings.Contains(string(payload), "docker") {
 		t.Fatalf("unsafe or incomplete update request: %s", payload)
 	}
 }

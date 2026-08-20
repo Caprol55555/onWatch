@@ -36,6 +36,7 @@
             <button class="settings-tab" data-tab="dashboard" role="tab" aria-selected="false" aria-controls="panel-dashboard" data-i18n="settings.dashboard_tab">Dashboard</button>
             <button class="settings-tab" data-tab="providers" role="tab" aria-selected="false" aria-controls="panel-providers" data-i18n="settings.providers_tab">Providers</button>
             <button class="settings-tab" data-tab="menubar" role="tab" aria-selected="false" aria-controls="panel-menubar" hidden data-i18n="settings.menubar_tab">Menubar</button>
+			<button class="settings-tab" data-tab="operations" role="tab" aria-selected="false" aria-controls="panel-operations" data-i18n="settings.operations_tab">系统运维</button>
             <button class="settings-tab" data-tab="general" role="tab" aria-selected="false" aria-controls="panel-general" data-i18n="settings.general_tab">General</button>
         </div>
         <div class="settings-autosave-row">
@@ -357,7 +358,46 @@
 
         </div>
 
-        <!-- General Panel -->
+		<!-- Operations Panel -->
+		<div class="settings-panel" id="panel-operations" role="tabpanel" hidden>
+			<div class="settings-section">
+				<h3 class="settings-section-title" data-i18n="operations.storage_title">存储与数据保留</h3>
+				<p class="settings-section-desc" data-i18n="operations.storage_desc">系统会先创建并校验备份，再用小批次事务清理过期数据。</p>
+				<div class="settings-fields">
+					<div class="settings-field settings-field-half"><label for="retention-snapshot-days" data-i18n="operations.snapshot_days">快照保留天数</label><input class="settings-input" id="retention-snapshot-days" type="number" min="1" max="3650" value="90"></div>
+					<div class="settings-field settings-field-half"><label for="retention-cycle-days" data-i18n="operations.cycle_days">周期保留天数</label><input class="settings-input" id="retention-cycle-days" type="number" min="1" max="3650" value="365"></div>
+					<div class="settings-field settings-field-half"><label for="retention-alert-days" data-i18n="operations.alert_days">告警保留天数</label><input class="settings-input" id="retention-alert-days" type="number" min="1" max="3650" value="90"></div>
+					<div class="settings-field settings-field-half"><label for="retention-backup-days" data-i18n="operations.backup_days">备份保留天数</label><input class="settings-input" id="retention-backup-days" type="number" min="1" max="3650" value="30"></div>
+					<div class="settings-field settings-field-half"><label for="retention-batch-size" data-i18n="operations.batch_size">每批清理行数</label><input class="settings-input" id="retention-batch-size" type="number" min="100" max="5000" step="100" value="1000"></div>
+				</div>
+				<div class="settings-actions"><button class="settings-test-btn" id="maintenance-refresh" type="button" data-i18n="common.refresh">刷新</button><button class="settings-save-btn settings-save-btn-secondary" id="maintenance-run" type="button" data-i18n="operations.run_maintenance">立即备份并清理</button><span class="settings-test-result" id="maintenance-result"></span></div>
+				<div class="api-integrations-health-grid" id="maintenance-stats"></div>
+			</div>
+			<div class="settings-divider"></div>
+			<div class="settings-section">
+				<h3 class="settings-section-title" data-i18n="operations.backups_title">备份与恢复</h3>
+				<p class="settings-section-desc" data-i18n="operations.backups_desc">恢复文件会先校验，并在下次重启打开 SQLite 前应用；系统会自动保留恢复前副本。</p>
+				<div class="settings-actions"><button class="settings-test-btn" id="backup-create" type="button" data-i18n="operations.create_backup">创建备份</button></div>
+				<div class="data-table-wrapper"><table class="data-table"><thead><tr><th data-i18n="operations.backup_time">时间</th><th data-i18n="operations.backup_size">大小</th><th data-i18n="operations.backup_reason">原因</th><th data-i18n="common.actions">操作</th></tr></thead><tbody id="backup-list"></tbody></table></div>
+			</div>
+			<div class="settings-divider"></div>
+			<div class="settings-section">
+				<h3 class="settings-section-title" data-i18n="operations.health_title">采集健康状态</h3>
+				<p class="settings-section-desc" data-i18n="operations.health_desc">按服务商和账号展示数据新鲜度、认证状态、连续失败和受限的手动重试。</p>
+				<div class="data-table-wrapper"><table class="data-table"><thead><tr><th data-i18n="common.provider">服务商</th><th data-i18n="common.account">账号</th><th data-i18n="common.status">状态</th><th data-i18n="operations.last_success">最后成功</th><th data-i18n="operations.failures">连续失败</th><th data-i18n="common.actions">操作</th></tr></thead><tbody id="collection-health-list"></tbody></table></div>
+			</div>
+			<div class="settings-divider"></div>
+			<div class="settings-section">
+				<h3 class="settings-section-title" data-i18n="operations.alert_lifecycle">告警生命周期</h3>
+				<div class="settings-fields">
+					<div class="settings-field settings-field-half"><label for="alerts-failure-confirmations" data-i18n="operations.failure_confirmations">连续失败多少次后告警</label><input class="settings-input" id="alerts-failure-confirmations" type="number" min="1" max="10" value="2"></div>
+					<div class="settings-field settings-field-half"><label for="alerts-recovery-confirmations" data-i18n="operations.recovery_confirmations">连续成功多少次后恢复</label><input class="settings-input" id="alerts-recovery-confirmations" type="number" min="1" max="10" value="2"></div>
+					<div class="settings-field settings-field-half"><label for="alerts-silence-minutes" data-i18n="operations.silence_minutes">默认静默时长（分钟）</label><input class="settings-input" id="alerts-silence-minutes" type="number" min="1" max="10080" value="60"></div>
+				</div>
+			</div>
+		</div>
+
+		<!-- General Panel -->
         <div class="settings-panel" id="panel-general" role="tabpanel" hidden>
             <div class="settings-section">
                 <h3 class="settings-section-title" data-i18n="settings.system_update">System Update</h3>
@@ -365,12 +405,15 @@
                 <div class="settings-fields system-version-grid">
                     <div class="settings-field settings-field-half"><label data-i18n="settings.current_version">Current Version</label><div class="settings-readonly-value" id="settings-current-version">--</div></div>
                     <div class="settings-field settings-field-half"><label data-i18n="settings.last_build_time">Last Updated</label><div class="settings-readonly-value" id="settings-build-time">--</div></div>
+					<div class="settings-field settings-field-half"><label data-i18n="operations.schema_version">数据库结构版本</label><div class="settings-readonly-value" id="settings-schema-version">--</div></div>
+					<div class="settings-field settings-field-half"><label data-i18n="operations.image_digest">镜像摘要</label><div class="settings-readonly-value" id="settings-image-digest">--</div></div>
                 </div>
                 <div class="settings-actions">
                     <button class="settings-test-btn" id="settings-update-check-btn" type="button"><span data-i18n="settings.check_update">Check for Updates</span></button>
                     <button class="settings-save-btn settings-save-btn-secondary" id="settings-update-apply-btn" type="button" hidden><span data-i18n="settings.install_update">Install Update</span></button>
                     <span class="settings-test-result" id="settings-update-result"></span>
                 </div>
+				<div class="settings-field-hint" id="settings-update-health"></div>
             </div>
             <div class="settings-divider"></div>
             <div class="settings-section">

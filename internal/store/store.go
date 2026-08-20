@@ -24,6 +24,10 @@ type Store struct {
 	credentialKey []byte
 }
 
+// CurrentSchemaVersion starts explicit schema tracking for managed migrations.
+// Earlier releases created the table but did not populate it.
+const CurrentSchemaVersion = 1
+
 // Session represents an agent session
 type Session struct {
 	ID                  string
@@ -278,7 +282,11 @@ func (s *Store) createTables() error {
 			severity TEXT NOT NULL DEFAULT 'warning',
 			created_at TEXT NOT NULL,
 			dismissed_at TEXT,
-			metadata TEXT
+			metadata TEXT,
+			status TEXT NOT NULL DEFAULT 'open',
+			acknowledged_at TEXT,
+			resolved_at TEXT,
+			silenced_until TEXT
 		);
 		CREATE INDEX IF NOT EXISTS idx_system_alerts_dismissed ON system_alerts(dismissed_at);
 		CREATE INDEX IF NOT EXISTS idx_system_alerts_created ON system_alerts(created_at);
@@ -389,6 +397,23 @@ func (s *Store) createTables() error {
 			sent_at TEXT NOT NULL,
 			utilization REAL,
 			UNIQUE(provider, quota_key, notification_type)
+		);
+
+		CREATE TABLE IF NOT EXISTS auth_recovery_state (
+			provider TEXT NOT NULL,
+			account_id TEXT NOT NULL,
+			success_count INTEGER NOT NULL DEFAULT 0,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY(provider, account_id)
+		);
+
+		CREATE TABLE IF NOT EXISTS auth_failure_state (
+			provider TEXT NOT NULL,
+			account_id TEXT NOT NULL,
+			error_code TEXT NOT NULL,
+			failure_count INTEGER NOT NULL DEFAULT 0,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY(provider, account_id)
 		);
 
 		-- Push notification subscriptions
@@ -892,8 +917,26 @@ func (s *Store) createTables() error {
 	if err := s.migrateSchema(); err != nil {
 		return fmt.Errorf("failed to migrate schema: %w", err)
 	}
+	if err := s.setSchemaVersion(CurrentSchemaVersion); err != nil {
+		return fmt.Errorf("failed to record schema version: %w", err)
+	}
 
 	return nil
+}
+
+func (s *Store) setSchemaVersion(version int) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM schema_version`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO schema_version(version) VALUES(?)`, version); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // migrateSchema handles schema migrations for existing databases
@@ -1157,6 +1200,31 @@ func (s *Store) migrateSchema() error {
 
 	if err := s.migrateOpenCodeMultiAccount(); err != nil {
 		return fmt.Errorf("failed OpenCode multi-account migration: %w", err)
+	}
+
+	// Alert lifecycle columns are additive and preserve every existing alert as open.
+	// Keep this migration atomic so an interrupted upgrade cannot leave only a
+	// subset of lifecycle fields installed.
+	alertTx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin system alert lifecycle migration: %w", err)
+	}
+	for _, column := range []string{
+		"status TEXT NOT NULL DEFAULT 'open'",
+		"acknowledged_at TEXT",
+		"resolved_at TEXT",
+		"silenced_until TEXT",
+	} {
+		if _, err := alertTx.Exec(`ALTER TABLE system_alerts ADD COLUMN ` + column); err != nil && !strings.Contains(err.Error(), "duplicate column name") && !strings.Contains(err.Error(), "no such table") {
+			_ = alertTx.Rollback()
+			return fmt.Errorf("failed to migrate system alert lifecycle: %w", err)
+		}
+	}
+	if err := alertTx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit system alert lifecycle migration: %w", err)
+	}
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_system_alerts_active_auth ON system_alerts(provider, alert_type, resolved_at, dismissed_at)`); err != nil && !strings.Contains(err.Error(), "no such table") {
+		return fmt.Errorf("failed to create system alert lifecycle index: %w", err)
 	}
 
 	// Drop raw_line column from api_integration_usage_events - no longer stored.
@@ -2369,15 +2437,19 @@ func (s *Store) GetPushSubscriptions() ([]PushSubscriptionRow, error) {
 
 // SystemAlert represents an in-dashboard notification.
 type SystemAlert struct {
-	ID          int64      `json:"id"`
-	Provider    string     `json:"provider"`
-	AlertType   string     `json:"alert_type"`
-	Title       string     `json:"title"`
-	Message     string     `json:"message"`
-	Severity    string     `json:"severity"` // "info", "warning", "error"
-	CreatedAt   time.Time  `json:"created_at"`
-	DismissedAt *time.Time `json:"dismissed_at,omitempty"`
-	Metadata    string     `json:"metadata,omitempty"`
+	ID             int64      `json:"id"`
+	Provider       string     `json:"provider"`
+	AlertType      string     `json:"alert_type"`
+	Title          string     `json:"title"`
+	Message        string     `json:"message"`
+	Severity       string     `json:"severity"` // "info", "warning", "error"
+	CreatedAt      time.Time  `json:"created_at"`
+	DismissedAt    *time.Time `json:"dismissed_at,omitempty"`
+	Metadata       string     `json:"metadata,omitempty"`
+	Status         string     `json:"status"`
+	AcknowledgedAt *time.Time `json:"acknowledged_at,omitempty"`
+	ResolvedAt     *time.Time `json:"resolved_at,omitempty"`
+	SilencedUntil  *time.Time `json:"silenced_until,omitempty"`
 }
 
 // CreateSystemAlert creates a new system alert for in-dashboard notifications.
@@ -2398,12 +2470,12 @@ func (s *Store) CreateSystemAlert(provider, alertType, title, message, severity 
 // GetActiveSystemAlerts returns all non-dismissed alerts, ordered by most recent first.
 func (s *Store) GetActiveSystemAlerts() ([]SystemAlert, error) {
 	rows, err := s.db.Query(`
-		SELECT id, provider, alert_type, title, message, severity, created_at, metadata
+		SELECT id, provider, alert_type, title, message, severity, created_at, metadata, status, acknowledged_at, resolved_at, silenced_until
 		FROM system_alerts
-		WHERE dismissed_at IS NULL
+		WHERE dismissed_at IS NULL AND resolved_at IS NULL AND (silenced_until IS NULL OR silenced_until <= ?)
 		ORDER BY created_at DESC
 		LIMIT 50
-	`)
+	`, time.Now().UTC().Format(time.RFC3339))
 	if err != nil {
 		return nil, fmt.Errorf("store.GetActiveSystemAlerts: %w", err)
 	}
@@ -2413,13 +2485,25 @@ func (s *Store) GetActiveSystemAlerts() ([]SystemAlert, error) {
 	for rows.Next() {
 		var a SystemAlert
 		var createdAt, metadata string
-		if err := rows.Scan(&a.ID, &a.Provider, &a.AlertType, &a.Title, &a.Message, &a.Severity, &createdAt, &metadata); err != nil {
+		var acknowledged, resolved, silenced sql.NullString
+		if err := rows.Scan(&a.ID, &a.Provider, &a.AlertType, &a.Title, &a.Message, &a.Severity, &createdAt, &metadata, &a.Status, &acknowledged, &resolved, &silenced); err != nil {
 			return nil, fmt.Errorf("store.GetActiveSystemAlerts: scan: %w", err)
 		}
 		if t, err := time.Parse(time.RFC3339, createdAt); err == nil {
 			a.CreatedAt = t
 		}
 		a.Metadata = metadata
+		parse := func(value sql.NullString) *time.Time {
+			if !value.Valid {
+				return nil
+			}
+			t, err := time.Parse(time.RFC3339, value.String)
+			if err != nil {
+				return nil
+			}
+			return &t
+		}
+		a.AcknowledgedAt, a.ResolvedAt, a.SilencedUntil = parse(acknowledged), parse(resolved), parse(silenced)
 		alerts = append(alerts, a)
 	}
 	return alerts, rows.Err()
@@ -2428,7 +2512,7 @@ func (s *Store) GetActiveSystemAlerts() ([]SystemAlert, error) {
 // DismissSystemAlert marks an alert as dismissed.
 func (s *Store) DismissSystemAlert(id int64) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := s.db.Exec(`UPDATE system_alerts SET dismissed_at = ? WHERE id = ?`, now, id)
+	_, err := s.db.Exec(`UPDATE system_alerts SET dismissed_at = ?, status='dismissed' WHERE id = ?`, now, id)
 	if err != nil {
 		return fmt.Errorf("store.DismissSystemAlert: %w", err)
 	}
@@ -2438,7 +2522,7 @@ func (s *Store) DismissSystemAlert(id int64) error {
 // DismissAllSystemAlerts marks all active alerts as dismissed.
 func (s *Store) DismissAllSystemAlerts() error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := s.db.Exec(`UPDATE system_alerts SET dismissed_at = ? WHERE dismissed_at IS NULL`, now)
+	_, err := s.db.Exec(`UPDATE system_alerts SET dismissed_at = ?, status='dismissed' WHERE dismissed_at IS NULL`, now)
 	if err != nil {
 		return fmt.Errorf("store.DismissAllSystemAlerts: %w", err)
 	}
@@ -2461,7 +2545,7 @@ func (s *Store) HasActiveAlertOfType(provider, alertType string) (bool, error) {
 	var count int
 	err := s.db.QueryRow(`
 		SELECT COUNT(*) FROM system_alerts
-		WHERE provider = ? AND alert_type = ? AND dismissed_at IS NULL
+		WHERE provider = ? AND alert_type = ? AND dismissed_at IS NULL AND resolved_at IS NULL
 	`, provider, alertType).Scan(&count)
 	if err != nil {
 		return false, fmt.Errorf("store.HasActiveAlertOfType: %w", err)
@@ -2476,11 +2560,58 @@ func (s *Store) HasActiveAlertOfTypeForAccount(provider, alertType, accountID st
 	}
 	var count int
 	err := s.db.QueryRow(
-		`SELECT COUNT(*) FROM system_alerts WHERE provider = ? AND alert_type = ? AND dismissed_at IS NULL AND json_extract(COALESCE(metadata, '{}'), '$.account_id') = ?`,
+		`SELECT COUNT(*) FROM system_alerts WHERE provider = ? AND alert_type = ? AND dismissed_at IS NULL AND resolved_at IS NULL AND json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.account_id') = ?`,
 		provider, alertType, accountID,
 	).Scan(&count)
 	if err != nil {
 		return false, fmt.Errorf("store.HasActiveAlertOfTypeForAccount: %w", err)
 	}
 	return count > 0, nil
+}
+
+// HasActiveAuthAlertForAccount reports whether an unresolved authentication
+// incident exists for one account, including terminal refresh failures.
+func (s *Store) HasActiveAuthAlertForAccount(provider, accountID string) (bool, error) {
+	var count int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM system_alerts WHERE provider = ? AND alert_type IN ('auth_error','token_refresh_failed') AND dismissed_at IS NULL AND resolved_at IS NULL AND json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.account_id') = ?`,
+		provider, accountID,
+	).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("store.HasActiveAuthAlertForAccount: %w", err)
+	}
+	return count > 0, nil
+}
+
+func (s *Store) AcknowledgeSystemAlert(id int64) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.Exec(`UPDATE system_alerts SET status='acknowledged', acknowledged_at=? WHERE id=? AND resolved_at IS NULL`, now, id)
+	return err
+}
+
+func (s *Store) ResolveSystemAlert(id int64) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.Exec(`UPDATE system_alerts SET status='resolved', resolved_at=? WHERE id=?`, now, id)
+	return err
+}
+
+func (s *Store) SilenceSystemAlert(id int64, until time.Time) error {
+	_, err := s.db.Exec(`UPDATE system_alerts SET status='silenced', silenced_until=? WHERE id=? AND resolved_at IS NULL`, until.UTC().Format(time.RFC3339), id)
+	return err
+}
+
+func (s *Store) ResolveSystemAlertsForAccount(provider, accountID string) (int64, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	if accountID == "" {
+		res, err := s.db.Exec(`UPDATE system_alerts SET status='resolved', resolved_at=? WHERE provider=? AND resolved_at IS NULL AND alert_type IN ('auth_error','token_refresh_failed')`, now, provider)
+		if err != nil {
+			return 0, err
+		}
+		return res.RowsAffected()
+	}
+	res, err := s.db.Exec(`UPDATE system_alerts SET status='resolved', resolved_at=? WHERE provider=? AND resolved_at IS NULL AND alert_type IN ('auth_error','token_refresh_failed') AND json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.account_id')=?`, now, provider, accountID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }

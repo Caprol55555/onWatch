@@ -44,6 +44,22 @@ func providerCredentialError(err error) string {
 	}
 }
 
+func connectionTestPayload(errorCode string) map[string]interface{} {
+	result := map[string]interface{}{"success": errorCode == "", "connected": false, "authenticated": false, "quota_parsed": false, "stage": "network"}
+	if errorCode == "" {
+		result["connected"], result["authenticated"], result["quota_parsed"], result["stage"] = true, true, true, "complete"
+		return result
+	}
+	result["error"] = errorCode
+	switch errorCode {
+	case "authentication_failed", "access_blocked":
+		result["connected"], result["stage"] = true, "authentication"
+	case "quota_parse_failed":
+		result["connected"], result["authenticated"], result["stage"] = true, true, "quota_parse"
+	}
+	return result
+}
+
 func normalizeProviderCredentialValues(provider string, values map[string]string) (map[string]string, bool) {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	normalized := map[string]string{}
@@ -135,8 +151,8 @@ func (h *Handler) ProviderCredentialTest(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), providerCredentialTestTimeout)
 	defer cancel()
 	if err := test(ctx, provider, values); err != nil {
-		respondJSON(w, http.StatusOK, map[string]interface{}{"success": false, "error": providerCredentialError(err)})
+		respondJSON(w, http.StatusOK, connectionTestPayload(providerCredentialError(err)))
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]interface{}{"success": true})
+	respondJSON(w, http.StatusOK, connectionTestPayload(""))
 }
