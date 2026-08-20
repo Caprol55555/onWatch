@@ -34,7 +34,7 @@ func ValidatePaceConfig(cfg PaceConfig) error {
 }
 
 func normalizePaceConfig(cfg PaceConfig) PaceConfig {
-	if cfg.Warning <= 0 {
+	if cfg.Warning < 0 || (cfg.Warning == 0 && cfg.Critical == 0) {
 		cfg.Warning = 10
 	}
 	if cfg.Critical <= cfg.Warning {

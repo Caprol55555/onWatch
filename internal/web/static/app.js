@@ -4190,15 +4190,33 @@ const opencodeChartColorFallback = [
 ];
 
 function quotaThresholdMarkersHTML(quota) {
+  const raw = Number(quota?.paceRawMarker);
   const warning = Number(quota?.paceWarningMarker);
   const critical = Number(quota?.paceCriticalMarker);
-  if (!Number.isFinite(warning) || !Number.isFinite(critical)) return '';
+  if (!Number.isFinite(raw) && !Number.isFinite(warning) && !Number.isFinite(critical)) return '';
   const displayPosition = (value) => Math.max(0, Math.min(100, quota.cardPercent != null ? 100 - value : value));
-  const warningPosition = displayPosition(warning);
-  const criticalPosition = displayPosition(critical);
-  return `
-    <span class="quota-threshold-marker quota-threshold-warning" style="left:${warningPosition.toFixed(2)}%" title="${escapeHTML(tr('quota.pace_warning_marker', { percent: warning.toFixed(1) }))}" aria-label="${escapeHTML(tr('quota.pace_warning_marker', { percent: warning.toFixed(1) }))}"></span>
-    <span class="quota-threshold-marker quota-threshold-critical" style="left:${criticalPosition.toFixed(2)}%" title="${escapeHTML(tr('quota.pace_critical_marker', { percent: critical.toFixed(1) }))}" aria-label="${escapeHTML(tr('quota.pace_critical_marker', { percent: critical.toFixed(1) }))}"></span>`;
+  const marker = (value, className, key) => Number.isFinite(value)
+    ? `<span class="quota-threshold-marker ${className}" style="left:${displayPosition(value).toFixed(2)}%" title="${escapeHTML(tr(key, { percent: value.toFixed(1) }))}" aria-label="${escapeHTML(tr(key, { percent: value.toFixed(1) }))}"></span>`
+    : '';
+  return marker(raw, 'quota-threshold-raw', 'quota.pace_raw_marker')
+    + marker(warning, 'quota-threshold-warning', 'quota.pace_warning_marker')
+    + marker(critical, 'quota-threshold-critical', 'quota.pace_critical_marker');
+}
+
+function quotaProgressStatus(quota, percent) {
+  const raw = Number(quota?.paceRawMarker);
+  const warning = Number(quota?.paceWarningMarker);
+  const critical = Number(quota?.paceCriticalMarker);
+  // OpenCode can render the bar as remaining percentage (cardPercent). Alert
+  // thresholds are always expressed as utilization, so convert before
+  // comparing while keeping the visual marker positions reversed below.
+  const utilizationPercent = quota?.cardPercent != null ? 100 - percent : percent;
+  if (Number.isFinite(raw)) {
+    if (Number.isFinite(critical) && utilizationPercent >= critical) return 'pace-critical';
+    if (Number.isFinite(warning) && utilizationPercent >= warning) return 'pace-warning';
+    return 'pace-raw';
+  }
+  return quota?.status || getQuotaStatus(percent);
 }
 
 function renderOpenCodeQuotaCards(quotas, containerId) {
@@ -4216,6 +4234,7 @@ function renderOpenCodeQuotaCards(quotas, containerId) {
     const displayPct = q.cardPercent != null ? q.cardPercent : (q.utilization || 0);
     const usagePct = displayPct.toFixed(1);
     const status = q.status || 'healthy';
+    const progressStatus = quotaProgressStatus(q, displayPct);
     const statusCfg = statusConfig[status] || statusConfig.healthy;
     const progressId = `progress-opencode-${q.name}`;
     const percentId = `percent-opencode-${q.name}`;
@@ -4240,7 +4259,7 @@ function renderOpenCodeQuotaCards(quotas, containerId) {
       </div>
       <div class="progress-wrapper">
         <div class="progress-bar" role="progressbar" aria-valuenow="${Math.round(displayPct)}" aria-valuemin="0" aria-valuemax="100">
-          <div class="progress-fill" id="${progressId}" style="width: ${usagePct}%" data-status="${status}"></div>
+          <div class="progress-fill" id="${progressId}" style="width: ${usagePct}%" data-status="${progressStatus}"></div>
           ${quotaThresholdMarkersHTML(q)}
         </div>
       </div>
@@ -4286,6 +4305,7 @@ function updateOpenCodeCard(quota) {
   const displayPct = quota.cardPercent != null ? quota.cardPercent : (quota.utilization || 0);
   const usagePct = displayPct.toFixed(1);
   const status = quota.status || 'healthy';
+  const progressStatus = quotaProgressStatus(quota, displayPct);
 
   const progressEl = document.getElementById(`progress-opencode-${quota.name}`);
   const percentEl = document.getElementById(`percent-opencode-${quota.name}`);
@@ -4296,7 +4316,7 @@ function updateOpenCodeCard(quota) {
 
   if (progressEl) {
     progressEl.style.width = `${usagePct}%`;
-    progressEl.setAttribute('data-status', status);
+    progressEl.setAttribute('data-status', progressStatus);
     const bar = progressEl.parentElement;
     if (bar) {
       bar.setAttribute('aria-valuenow', Math.round(displayPct));
@@ -4663,8 +4683,10 @@ function accountOverviewQuotas(provider, account) {
       percent: typeof q.utilization === 'number' ? q.utilization : 0,
       status: q.status || 'healthy',
       resetAt: q.resetsAt || null,
+      paceRawMarker: q.paceRawMarker,
       paceWarningMarker: q.paceWarningMarker,
       paceCriticalMarker: q.paceCriticalMarker,
+      paceAlertMode: q.paceAlertMode,
     }));
   }
   const visible = filterCodexQuotasForPlan(account.quotas || [], account.planType);
@@ -4709,7 +4731,7 @@ function accountOverviewCardHTML(provider, account, idx) {
             <span class="aoq-pct">${pct}%</span>
           </div>
           <div class="progress-bar" role="progressbar" aria-valuenow="${Math.round(r.percent)}" aria-valuemin="0" aria-valuemax="100">
-            <div class="progress-fill" style="width: ${pct}%" data-status="${r.status}"></div>
+            <div class="progress-fill" style="width: ${pct}%" data-status="${quotaProgressStatus(r, Number(pct))}"></div>
             ${quotaThresholdMarkersHTML(r)}
           </div>
           ${reset ? `<div class="aoq-reset" data-reset-at="${r.resetAt}">${reset}</div>` : ''}
@@ -4737,7 +4759,7 @@ function openCodeAggregateCardHTML(aggregate) {
     return `<div class="account-overview-quota" data-quota="${escapeHTML(q.name)}">
       <div class="aoq-top"><span class="aoq-label">${escapeHTML(label)}</span><span class="aoq-pct">${pct.toFixed(1)}%</span></div>
       <div class="progress-bar" role="progressbar" aria-valuenow="${Math.round(pct)}" aria-valuemin="0" aria-valuemax="100">
-        <div class="progress-fill" style="width:${pct.toFixed(1)}%" data-status="${q.status || getQuotaStatus(pct)}"></div>
+        <div class="progress-fill" style="width:${pct.toFixed(1)}%" data-status="${quotaProgressStatus(q, pct)}"></div>
         ${quotaThresholdMarkersHTML(q)}
       </div>
       <div class="aoq-reset">${tr('opencode.aggregate_samples', { count: q.sampleCount || 0 })}</div>
@@ -10079,6 +10101,7 @@ async function loadSettings() {
       setVal('lunch-start', pace.lunch_start || '12:00');
       setVal('lunch-minutes', pace.lunch_minutes ?? 60);
       setVal('workdays-per-week', pace.workdays_per_week || 5);
+      renderProviderAlertPolicies(n.provider_policies || {}, n.warning_threshold ?? 80, n.critical_threshold ?? 95, pace.warning_threshold ?? 10, pace.critical_threshold ?? 20);
       // Load channel preferences
       if (n.channels) {
         const emailToggle = document.getElementById('channel-email');
@@ -10090,6 +10113,8 @@ async function loadSettings() {
       if (n.overrides && n.overrides.length > 0) {
         n.overrides.forEach(o => addOverrideRow(o.quota_key, o.provider, o.warning, o.critical, o.is_absolute, o.disable_reset, o.disable_warning, o.disable_critical));
       }
+    } else {
+      renderProviderAlertPolicies();
     }
 
     // Provider settings - store in State for modal use
@@ -12198,6 +12223,50 @@ function setupProviderReload() {
   });
 }
 
+const notificationProviderCatalog = [
+  ['anthropic', 'Anthropic'], ['synthetic', 'Synthetic'], ['zai', 'Z.ai'], ['copilot', 'Copilot'],
+  ['codex', 'Codex'], ['antigravity', 'Antigravity'], ['minimax', 'MiniMax'], ['openrouter', 'OpenRouter'],
+  ['moonshot', 'Moonshot'], ['deepseek', 'DeepSeek'], ['gemini', 'Gemini'], ['cursor', 'Cursor'],
+  ['grok', 'Grok'], ['kimi', 'Kimi Code'], ['opencode', 'OpenCode Go'],
+];
+
+function renderProviderAlertPolicies(savedPolicies = {}, globalWarning = 80, globalCritical = 95, paceWarning = 10, paceCritical = 20) {
+  const list = document.getElementById('provider-alert-policy-list');
+  if (!list) return;
+  list.innerHTML = notificationProviderCatalog.map(([provider, label]) => {
+    const saved = savedPolicies?.[provider] || {};
+    const defaultMode = provider === 'opencode' ? 'pace' : 'percentage';
+    const mode = ['disabled', 'percentage', 'pace'].includes(saved.mode) ? saved.mode : defaultMode;
+    const isPace = mode === 'pace';
+    const warning = Number.isFinite(Number(saved.warning_threshold)) ? Number(saved.warning_threshold) : (isPace ? paceWarning : globalWarning);
+    const critical = Number.isFinite(Number(saved.critical_threshold)) ? Number(saved.critical_threshold) : (isPace ? paceCritical : globalCritical);
+    return `<div class="provider-alert-policy-row" data-provider="${provider}">
+      <div class="provider-alert-policy-name">${escapeHTML(defaultProviderTabLabel(provider))}</div>
+      <label class="provider-alert-policy-mode"><span class="sr-only">${tr('settings.alert_mode')}</span><select class="settings-input provider-alert-mode" aria-label="${escapeHTML(tr('settings.alert_mode'))}">
+        <option value="percentage" ${mode === 'percentage' ? 'selected' : ''}>${tr('settings.alert_mode_percentage')}</option>
+        <option value="pace" ${mode === 'pace' ? 'selected' : ''}>${tr('settings.alert_mode_pace')}</option>
+        <option value="disabled" ${mode === 'disabled' ? 'selected' : ''}>${tr('settings.alert_mode_disabled')}</option>
+      </select></label>
+      <label><span class="sr-only">${tr('settings.provider_warning')}</span><input type="number" class="settings-input provider-alert-warning" min="0" max="100" step="1" value="${warning}" aria-label="${escapeHTML(tr('settings.provider_warning'))}"></label>
+      <label><span class="sr-only">${tr('settings.provider_critical')}</span><input type="number" class="settings-input provider-alert-critical" min="0" max="100" step="1" value="${critical}" aria-label="${escapeHTML(tr('settings.provider_critical'))}"></label>
+    </div>`;
+  }).join('');
+}
+
+function gatherProviderAlertPolicies() {
+  const policies = {};
+  document.querySelectorAll('.provider-alert-policy-row').forEach(row => {
+    const provider = row.dataset.provider;
+    if (!provider) return;
+    policies[provider] = {
+      mode: row.querySelector('.provider-alert-mode')?.value || 'percentage',
+      warning_threshold: parseFloat(row.querySelector('.provider-alert-warning')?.value),
+      critical_threshold: parseFloat(row.querySelector('.provider-alert-critical')?.value),
+    };
+  });
+  return policies;
+}
+
 function gatherSettings() {
   const settings = {};
 
@@ -12256,6 +12325,7 @@ function gatherSettings() {
         lunch_minutes: parseInt(document.getElementById('lunch-minutes')?.value, 10) || 0,
         workdays_per_week: parseInt(document.getElementById('workdays-per-week')?.value, 10) || 5,
       },
+      provider_policies: gatherProviderAlertPolicies(),
       overrides: overrides,
     };
   }
@@ -12383,6 +12453,18 @@ function validateSettingsForAutoSave(settings, feedback) {
       || pace.workday_start >= pace.workday_end)) {
     showSettingsFeedback(feedback, tr('settings.pace_invalid'), 'error');
     return false;
+  }
+  const providerPolicies = settings.notifications?.provider_policies || {};
+  for (const policy of Object.values(providerPolicies)) {
+    if (!policy || policy.mode === 'disabled') continue;
+    if (!['percentage', 'pace'].includes(policy.mode)
+        || !Number.isFinite(policy.warning_threshold)
+        || !Number.isFinite(policy.critical_threshold)
+        || policy.warning_threshold < 0 || policy.critical_threshold > 100
+        || policy.warning_threshold >= policy.critical_threshold) {
+      showSettingsFeedback(feedback, tr('settings.provider_alert_policy_invalid'), 'error');
+      return false;
+    }
   }
   if (!Number.isInteger(settings.poll_interval_seconds)
       || settings.poll_interval_seconds < 10

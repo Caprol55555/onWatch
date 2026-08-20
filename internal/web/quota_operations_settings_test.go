@@ -54,6 +54,44 @@ func TestSettingsRejectInvalidPaceSchedule(t *testing.T) {
 	}
 }
 
+func TestSettingsPersistPerProviderAlertPolicies(t *testing.T) {
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	h := NewHandler(s, nil, nil, nil, &config.Config{})
+	body := `{"notifications":{"warning_threshold":80,"critical_threshold":95,"cooldown_minutes":30,"provider_policies":{"opencode":{"mode":"pace","warning_threshold":12,"critical_threshold":24},"zai":{"mode":"disabled","warning_threshold":60,"critical_threshold":90}}}}`
+	rr := httptest.NewRecorder()
+	h.UpdateSettings(rr, httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	rr = httptest.NewRecorder()
+	h.GetSettings(rr, httptest.NewRequest(http.MethodGet, "/api/settings", nil))
+	response := rr.Body.String()
+	for _, expected := range []string{`"provider_policies"`, `"mode":"pace"`, `"mode":"disabled"`, `"warning_threshold":12`} {
+		if !strings.Contains(response, expected) {
+			t.Fatalf("settings missing %s: %s", expected, response)
+		}
+	}
+}
+
+func TestSettingsRejectInvalidProviderAlertPolicy(t *testing.T) {
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	h := NewHandler(s, nil, nil, nil, &config.Config{})
+	body := `{"notifications":{"warning_threshold":80,"critical_threshold":95,"provider_policies":{"zai":{"mode":"percentage","warning_threshold":95,"critical_threshold":80}}}}`
+	rr := httptest.NewRecorder()
+	h.UpdateSettings(rr, httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body)))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestContainerUpdateUsesHostTriggerWithoutExecutingCommands(t *testing.T) {
 	s, err := store.New(":memory:")
 	if err != nil {

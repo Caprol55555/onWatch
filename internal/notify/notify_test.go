@@ -176,6 +176,34 @@ func TestNotificationEngine_Reload_CustomValues(t *testing.T) {
 	}
 }
 
+func TestNotificationEngine_ProviderPoliciesSelectIndependentModes(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	defer s.Close()
+	storeNotificationConfig(t, s, notificationSettingsJSON{
+		WarningThreshold: 80, CriticalThreshold: 95, NotifyWarning: true, NotifyCritical: true,
+		ProviderPolicies: map[string]ProviderAlertPolicy{
+			"opencode":  {Mode: AlertModePercentage, Warning: 30, Critical: 60},
+			"anthropic": {Mode: AlertModeDisabled, Warning: 30, Critical: 60},
+		},
+	})
+	engine := newTestEngine(t, s)
+	if err := engine.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if got := engine.Config().ProviderPolicies["opencode"]; got.Mode != AlertModePercentage || got.Warning != 30 || got.Critical != 60 {
+		t.Fatalf("opencode policy=%+v", got)
+	}
+
+	mailCount, cleanup := setupSMTPAndMailer(t, s, engine)
+	defer cleanup()
+	engine.Check(QuotaStatus{Provider: "opencode", QuotaKey: "five_hour", Utilization: 35, Limit: 100})
+	engine.Check(QuotaStatus{Provider: "anthropic", QuotaKey: "five_hour", Utilization: 100, Limit: 100})
+	if got := mailCount.Load(); got != 1 {
+		t.Fatalf("provider policy notification count=%d, want 1", got)
+	}
+}
+
 func TestNotificationEngine_Check_WarningThreshold(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)

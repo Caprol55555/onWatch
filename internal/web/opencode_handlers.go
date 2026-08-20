@@ -156,6 +156,7 @@ func (h *Handler) OpenCodeAccountsSummary(w http.ResponseWriter, r *http.Request
 	}
 	now := time.Now()
 	paceCfg := h.openCodePaceConfig()
+	alertPolicy := h.openCodeAlertPolicy()
 	accounts := make([]map[string]any, 0, len(summaries))
 	for _, summary := range summaries {
 		entry := map[string]any{
@@ -172,7 +173,7 @@ func (h *Handler) OpenCodeAccountsSummary(w http.ResponseWriter, r *http.Request
 				item := map[string]any{"name": q.Name, "displayName": opencodeDisplayName(q.Name), "utilization": q.Utilization, "used": q.Used, "limit": q.Limit, "format": q.Format, "status": utilStatus(q.Utilization)}
 				if q.ResetsAt != nil {
 					item["resetsAt"] = q.ResetsAt.Format(time.RFC3339)
-					applyOpenCodePaceMarkers(item, q.Name, *q.ResetsAt, paceCfg, now)
+					applyOpenCodePaceMarkers(item, q.Name, *q.ResetsAt, paceCfg, alertPolicy, now)
 				}
 				quotas = append(quotas, item)
 			}
@@ -180,10 +181,10 @@ func (h *Handler) OpenCodeAccountsSummary(w http.ResponseWriter, r *http.Request
 		}
 		accounts = append(accounts, entry)
 	}
-	respondJSON(w, http.StatusOK, map[string]any{"accounts": accounts, "aggregate": h.buildOpenCodeSummaryAggregate(summaries, paceCfg, now)})
+	respondJSON(w, http.StatusOK, map[string]any{"accounts": accounts, "aggregate": h.buildOpenCodeSummaryAggregate(summaries, paceCfg, alertPolicy, now)})
 }
 
-func (h *Handler) buildOpenCodeSummaryAggregate(summaries []store.OpenCodeAccountSummary, paceCfg notify.PaceConfig, now time.Time) map[string]any {
+func (h *Handler) buildOpenCodeSummaryAggregate(summaries []store.OpenCodeAccountSummary, paceCfg notify.PaceConfig, alertPolicy notify.ProviderAlertPolicy, now time.Time) map[string]any {
 	type quotaAccumulator struct {
 		total            float64
 		count            int
@@ -216,7 +217,9 @@ func (h *Handler) buildOpenCodeSummaryAggregate(summaries []store.OpenCodeAccoun
 			if quota.Utilization >= value.maxUtilization {
 				value.maxUtilization, value.worstAccount = quota.Utilization, summary.Account.Name
 			}
-			if quota.ResetsAt != nil {
+			if quota.ResetsAt != nil && alertPolicy.Mode == notify.AlertModePace {
+				paceCfg.Warning = alertPolicy.Warning
+				paceCfg.Critical = alertPolicy.Critical
 				warning, critical, _, ok := notify.PaceMarkers(quota.Name, *quota.ResetsAt, paceCfg, now)
 				if ok {
 					value.warningTotal += warning
@@ -265,6 +268,15 @@ func (h *Handler) buildOpenCodeSummaryAggregate(summaries []store.OpenCodeAccoun
 			"maxUtilization": value.maxUtilization, "worstAccount": value.worstAccount,
 			"atRiskAccountCount": value.atRiskCount, "exhaustRiskAccountCount": value.exhaustRiskCount,
 		}
+		if isOpenCodePaceQuota(name) && alertPolicy.Mode != notify.AlertModeDisabled {
+			item["paceRawMarker"] = 0.0
+			item["paceAlertMode"] = alertPolicy.Mode
+			if alertPolicy.Mode == notify.AlertModePercentage {
+				item["paceWarningMarker"] = alertPolicy.Warning
+				item["paceCriticalMarker"] = alertPolicy.Critical
+				item["paceMarkerSampleCount"] = value.count
+			}
+		}
 		if value.projectedCount > 0 {
 			item["averageProjectedUtilization"] = value.projectedTotal / float64(value.projectedCount)
 		}
@@ -301,7 +313,54 @@ func (h *Handler) openCodePaceConfig() notify.PaceConfig {
 	return cfg
 }
 
-func applyOpenCodePaceMarkers(target map[string]any, quotaName string, resetsAt time.Time, cfg notify.PaceConfig, now time.Time) {
+func (h *Handler) openCodeAlertPolicy() notify.ProviderAlertPolicy {
+	paceCfg := h.openCodePaceConfig()
+	defaultPolicy := notify.ProviderAlertPolicy{Mode: notify.AlertModePace, Warning: paceCfg.Warning, Critical: paceCfg.Critical}
+	if h.store == nil {
+		return defaultPolicy
+	}
+	raw, err := h.store.GetSetting("notifications")
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return defaultPolicy
+	}
+	var saved struct {
+		ProviderPolicies map[string]notify.ProviderAlertPolicy `json:"provider_policies"`
+	}
+	if json.Unmarshal([]byte(raw), &saved) != nil {
+		return defaultPolicy
+	}
+	if policy, ok := saved.ProviderPolicies["opencode"]; ok {
+		policy.Mode = strings.ToLower(strings.TrimSpace(policy.Mode))
+		if policy.Mode == notify.AlertModeDisabled {
+			return policy
+		}
+		if policy.Mode == notify.AlertModePercentage || policy.Mode == notify.AlertModePace {
+			if notify.ValidateProviderAlertPolicy(policy) == nil {
+				return policy
+			}
+		}
+	}
+	return defaultPolicy
+}
+
+func isOpenCodePaceQuota(quotaName string) bool {
+	key := strings.ToLower(strings.TrimSpace(quotaName))
+	return key == "weekly" || key == "seven_day" || strings.HasPrefix(key, "weekly_") || strings.HasPrefix(key, "seven_day_") || key == "monthly" || key == "monthly_limit" || strings.HasPrefix(key, "monthly_")
+}
+
+func applyOpenCodePaceMarkers(target map[string]any, quotaName string, resetsAt time.Time, cfg notify.PaceConfig, policy notify.ProviderAlertPolicy, now time.Time) {
+	if !isOpenCodePaceQuota(quotaName) || policy.Mode == notify.AlertModeDisabled {
+		return
+	}
+	target["paceRawMarker"] = 0.0
+	target["paceAlertMode"] = policy.Mode
+	if policy.Mode == notify.AlertModePercentage {
+		target["paceWarningMarker"] = policy.Warning
+		target["paceCriticalMarker"] = policy.Critical
+		return
+	}
+	cfg.Warning = policy.Warning
+	cfg.Critical = policy.Critical
 	warning, critical, progress, ok := notify.PaceMarkers(quotaName, resetsAt, cfg, now)
 	if !ok {
 		return
@@ -550,7 +609,7 @@ func (h *Handler) buildOpenCodeAggregateCurrent() map[string]interface{} {
 	if !latest.IsZero() {
 		response["capturedAt"] = latest.Format(time.RFC3339)
 	}
-	aggregate := h.buildOpenCodeSummaryAggregate(summaries, h.openCodePaceConfig(), now)
+	aggregate := h.buildOpenCodeSummaryAggregate(summaries, h.openCodePaceConfig(), h.openCodeAlertPolicy(), now)
 	response["sampledAccountCount"] = aggregate["sampledAccountCount"]
 	response["quotas"] = aggregate["quotas"]
 	return response
@@ -559,6 +618,7 @@ func (h *Handler) buildOpenCodeAggregateCurrent() map[string]interface{} {
 func (h *Handler) buildOpenCodeCurrentForAccount(accountID int64) map[string]interface{} {
 	now := time.Now().UTC()
 	paceCfg := h.openCodePaceConfig()
+	alertPolicy := h.openCodeAlertPolicy()
 	response := map[string]interface{}{
 		"capturedAt": now.Format(time.RFC3339),
 		"quotas":     []interface{}{},
@@ -596,7 +656,7 @@ func (h *Handler) buildOpenCodeCurrentForAccount(accountID int64) map[string]int
 				quotaMap["resetsAt"] = q.ResetsAt.Format(time.RFC3339)
 				quotaMap["timeUntilReset"] = formatDuration(timeUntilReset)
 				quotaMap["timeUntilResetSeconds"] = int64(timeUntilReset.Seconds())
-				applyOpenCodePaceMarkers(quotaMap, q.Name, *q.ResetsAt, paceCfg, now)
+				applyOpenCodePaceMarkers(quotaMap, q.Name, *q.ResetsAt, paceCfg, alertPolicy, now)
 			}
 			if h.opencodeTracker != nil {
 				if summary, sErr := h.opencodeTracker.UsageSummaryForAccount(accountID, q.Name); sErr == nil && summary != nil {
@@ -639,7 +699,7 @@ func (h *Handler) buildOpenCodeCurrentForAccount(accountID int64) map[string]int
 			qMap["resetsAt"] = q.ResetsAt.Format(time.RFC3339)
 			qMap["timeUntilReset"] = formatDuration(timeUntilReset)
 			qMap["timeUntilResetSeconds"] = int64(timeUntilReset.Seconds())
-			applyOpenCodePaceMarkers(qMap, q.Name, *q.ResetsAt, paceCfg, now)
+			applyOpenCodePaceMarkers(qMap, q.Name, *q.ResetsAt, paceCfg, alertPolicy, now)
 		}
 		if h.opencodeTracker != nil {
 			if summary, sErr := h.opencodeTracker.UsageSummaryForAccount(accountID, q.Name); sErr == nil && summary != nil {

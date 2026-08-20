@@ -50,10 +50,67 @@ type NotificationConfig struct {
 	Warning   float64                      // global warning threshold (default 80)
 	Critical  float64                      // global critical threshold (default 95)
 	Overrides map[string]ThresholdOverride // per provider+quota overrides (legacy key: quota only)
-	Cooldown  time.Duration                // minimum time between notifications
-	Types     NotificationTypes            // which notification types are enabled
-	Channels  NotificationChannels         // which delivery channels are enabled
-	Pace      PaceConfig                   // work-schedule-aware weekly/monthly thresholds
+	// ProviderPolicies selects the alert metric and thresholds independently for
+	// each provider. An omitted provider keeps the legacy global behavior.
+	ProviderPolicies map[string]ProviderAlertPolicy
+	Cooldown         time.Duration        // minimum time between notifications
+	Types            NotificationTypes    // which notification types are enabled
+	Channels         NotificationChannels // which delivery channels are enabled
+	Pace             PaceConfig           // work-schedule-aware weekly/monthly thresholds
+}
+
+const (
+	AlertModeDisabled   = "disabled"
+	AlertModePercentage = "percentage"
+	AlertModePace       = "pace"
+)
+
+// ProviderAlertPolicy controls quota alert evaluation for one provider.
+// Percentage mode compares raw utilization; pace mode compares utilization
+// against elapsed working-time progress for weekly/monthly quotas.
+type ProviderAlertPolicy struct {
+	Mode     string  `json:"mode"`
+	Warning  float64 `json:"warning_threshold"`
+	Critical float64 `json:"critical_threshold"`
+}
+
+// ValidateProviderAlertPolicy validates a per-provider alert policy.
+func ValidateProviderAlertPolicy(policy ProviderAlertPolicy) error {
+	switch strings.ToLower(strings.TrimSpace(policy.Mode)) {
+	case AlertModeDisabled:
+		return nil
+	case AlertModePercentage, AlertModePace:
+		if policy.Warning < 0 || policy.Warning > 100 || policy.Critical < 0 || policy.Critical > 100 || policy.Warning >= policy.Critical {
+			return fmt.Errorf("provider alert warning threshold must be less than critical threshold and both must be between 0 and 100")
+		}
+		return nil
+	default:
+		return fmt.Errorf("provider alert mode must be disabled, percentage, or pace")
+	}
+}
+
+func normalizeProviderAlertPolicy(policy ProviderAlertPolicy) ProviderAlertPolicy {
+	policy.Mode = strings.ToLower(strings.TrimSpace(policy.Mode))
+	if policy.Mode == "" {
+		policy.Mode = AlertModePercentage
+	}
+	if policy.Warning < 0 {
+		policy.Warning = 0
+	}
+	if policy.Critical <= policy.Warning {
+		policy.Critical = minFloat(100, policy.Warning+20)
+		if policy.Critical <= policy.Warning {
+			policy.Warning, policy.Critical = 80, 95
+		}
+	}
+	return policy
+}
+
+func minFloat(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // PaceConfig controls work-progress-based alerts for weekly and monthly quotas.
@@ -114,13 +171,14 @@ func New(s *store.Store, logger *slog.Logger) *NotificationEngine {
 		store:  s,
 		logger: logger,
 		cfg: NotificationConfig{
-			Warning:   80,
-			Critical:  95,
-			Overrides: make(map[string]ThresholdOverride),
-			Cooldown:  30 * time.Minute,
-			Types:     NotificationTypes{Warning: true, Critical: true, Reset: false},
-			Channels:  NotificationChannels{Email: true, Push: true},
-			Pace:      PaceConfig{Enabled: true, Warning: 10, Critical: 20, WorkdayStart: "09:00", LunchStart: "12:00", LunchMinutes: 60, WorkdayEnd: "18:00", WorkdaysPerWeek: 5},
+			Warning:          80,
+			Critical:         95,
+			Overrides:        make(map[string]ThresholdOverride),
+			ProviderPolicies: make(map[string]ProviderAlertPolicy),
+			Cooldown:         30 * time.Minute,
+			Types:            NotificationTypes{Warning: true, Critical: true, Reset: false},
+			Channels:         NotificationChannels{Email: true, Push: true},
+			Pace:             PaceConfig{Enabled: true, Warning: 10, Critical: 20, WorkdayStart: "09:00", LunchStart: "12:00", LunchMinutes: 60, WorkdayEnd: "18:00", WorkdaysPerWeek: 5},
 		},
 	}
 }
@@ -152,20 +210,26 @@ func (e *NotificationEngine) Config() NotificationConfig {
 		overrides[k] = v
 	}
 	cfg.Overrides = overrides
+	providerPolicies := make(map[string]ProviderAlertPolicy, len(e.cfg.ProviderPolicies))
+	for k, v := range e.cfg.ProviderPolicies {
+		providerPolicies[k] = v
+	}
+	cfg.ProviderPolicies = providerPolicies
 	return cfg
 }
 
 // notificationSettingsJSON matches the JSON shape saved by the handler's UpdateSettings.
 type notificationSettingsJSON struct {
-	WarningThreshold  float64               `json:"warning_threshold"`
-	CriticalThreshold float64               `json:"critical_threshold"`
-	NotifyWarning     bool                  `json:"notify_warning"`
-	NotifyCritical    bool                  `json:"notify_critical"`
-	NotifyReset       bool                  `json:"notify_reset"`
-	NotifyAuthError   bool                  `json:"notify_auth_error"`
-	CooldownMinutes   int                   `json:"cooldown_minutes"`
-	Channels          *NotificationChannels `json:"channels,omitempty"`
-	Pace              *PaceConfig           `json:"pace,omitempty"`
+	WarningThreshold  float64                        `json:"warning_threshold"`
+	CriticalThreshold float64                        `json:"critical_threshold"`
+	NotifyWarning     bool                           `json:"notify_warning"`
+	NotifyCritical    bool                           `json:"notify_critical"`
+	NotifyReset       bool                           `json:"notify_reset"`
+	NotifyAuthError   bool                           `json:"notify_auth_error"`
+	CooldownMinutes   int                            `json:"cooldown_minutes"`
+	Channels          *NotificationChannels          `json:"channels,omitempty"`
+	Pace              *PaceConfig                    `json:"pace,omitempty"`
+	ProviderPolicies  map[string]ProviderAlertPolicy `json:"provider_policies,omitempty"`
 	Overrides         []struct {
 		QuotaKey       string  `json:"quota_key"`
 		Provider       string  `json:"provider"`
@@ -234,6 +298,16 @@ func (e *NotificationEngine) Reload() error {
 		}
 	}
 	e.cfg.Overrides = overrides
+	providerPolicies := make(map[string]ProviderAlertPolicy, len(notif.ProviderPolicies))
+	for provider, policy := range notif.ProviderPolicies {
+		provider = normalizeNotificationProvider(provider)
+		policy = normalizeProviderAlertPolicy(policy)
+		if err := ValidateProviderAlertPolicy(policy); err != nil {
+			return fmt.Errorf("notify.Reload: invalid provider policy for %s: %w", provider, err)
+		}
+		providerPolicies[provider] = policy
+	}
+	e.cfg.ProviderPolicies = providerPolicies
 
 	if notif.Channels != nil {
 		e.cfg.Channels = *notif.Channels
@@ -539,9 +613,36 @@ func (e *NotificationEngine) Check(status QuotaStatus) {
 		return
 	}
 
-	// Resolve thresholds
+	// Resolve thresholds. A provider policy takes precedence over the legacy
+	// global metric selection while quota-level overrides remain supported.
 	warningThreshold := cfg.Warning
 	criticalThreshold := cfg.Critical
+	alertMetric := status.Utilization
+	providerPolicy, hasProviderPolicy := cfg.ProviderPolicies[provider]
+	if hasProviderPolicy {
+		providerPolicy = normalizeProviderAlertPolicy(providerPolicy)
+		switch providerPolicy.Mode {
+		case AlertModeDisabled:
+			return
+		case AlertModePercentage:
+			warningThreshold = providerPolicy.Warning
+			criticalThreshold = providerPolicy.Critical
+		case AlertModePace:
+			paceCfg := cfg.Pace
+			paceCfg.Warning = providerPolicy.Warning
+			paceCfg.Critical = providerPolicy.Critical
+			metric, progress, evaluated := quotaAlertMetric(status, paceCfg, time.Now())
+			if !evaluated {
+				return
+			}
+			alertMetric = metric
+			warningThreshold = providerPolicy.Warning
+			criticalThreshold = providerPolicy.Critical
+			status.PaceEvaluated = true
+			status.WorkProgress = progress
+			status.PaceDeviation = metric
+		}
+	}
 	if hasOverride {
 		if override.IsAbsolute && status.Limit > 0 {
 			if override.Warning > 0 {
@@ -560,14 +661,18 @@ func (e *NotificationEngine) Check(status QuotaStatus) {
 		}
 	}
 
-	alertMetric := status.Utilization
-	if metric, progress, evaluated := quotaAlertMetric(status, cfg.Pace, time.Now()); evaluated && !hasOverride {
-		alertMetric = metric
-		warningThreshold = cfg.Pace.Warning
-		criticalThreshold = cfg.Pace.Critical
-		status.PaceEvaluated = true
-		status.WorkProgress = progress
-		status.PaceDeviation = metric
+	if !hasProviderPolicy {
+		alertMetric = status.Utilization
+	}
+	if !hasProviderPolicy && !hasOverride {
+		if metric, progress, evaluated := quotaAlertMetric(status, cfg.Pace, time.Now()); evaluated {
+			alertMetric = metric
+			warningThreshold = cfg.Pace.Warning
+			criticalThreshold = cfg.Pace.Critical
+			status.PaceEvaluated = true
+			status.WorkProgress = progress
+			status.PaceDeviation = metric
+		}
 	}
 
 	// Check critical first (higher priority)

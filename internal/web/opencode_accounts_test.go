@@ -253,7 +253,7 @@ func TestOpenCodeCurrentAndAggregateExposePaceMarkers(t *testing.T) {
 	current := h.buildOpenCodeCurrentForAccount(account.AccountID)
 	quotas := current["quotas"].([]interface{})
 	weekly := quotas[0].(map[string]interface{})
-	if weekly["paceWarningMarker"] == nil || weekly["paceCriticalMarker"] == nil {
+	if weekly["paceRawMarker"] == nil || weekly["paceWarningMarker"] == nil || weekly["paceCriticalMarker"] == nil || weekly["paceAlertMode"] != "pace" {
 		t.Fatalf("single-account quota missing pace markers: %+v", weekly)
 	}
 
@@ -261,6 +261,29 @@ func TestOpenCodeCurrentAndAggregateExposePaceMarkers(t *testing.T) {
 	h.OpenCodeAccountsSummary(rr, httptest.NewRequest(http.MethodGet, "/api/opencode/accounts/summary", nil))
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"paceWarningMarker"`) || !strings.Contains(rr.Body.String(), `"paceCriticalMarker"`) {
 		t.Fatalf("aggregate summary missing pace markers: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestOpenCodeMarkersFollowProviderPercentagePolicy(t *testing.T) {
+	t.Setenv("ONWATCH_CREDENTIAL_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.SetSetting("notifications", `{"provider_policies":{"opencode":{"mode":"percentage","warning_threshold":30,"critical_threshold":60}}}`); err != nil {
+		t.Fatal(err)
+	}
+	account, _ := s.CreateOpenCodeAccount("Percentage", "percentage-markers", "cookie", true)
+	reset := time.Now().UTC().Add(7 * 24 * time.Hour)
+	if _, err := s.InsertOpenCodeSnapshotForAccount(account.AccountID, &api.OpenCodeSnapshot{CapturedAt: time.Now().UTC(), Quotas: []api.OpenCodeQuota{{Name: "weekly", Utilization: 35, ResetsAt: &reset}}}); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(s, nil, nil, nil, nil)
+	current := h.buildOpenCodeCurrentForAccount(account.AccountID)
+	weekly := current["quotas"].([]interface{})[0].(map[string]interface{})
+	if weekly["paceRawMarker"] != float64(0) || weekly["paceWarningMarker"] != float64(30) || weekly["paceCriticalMarker"] != float64(60) || weekly["paceAlertMode"] != "percentage" {
+		t.Fatalf("percentage markers=%+v", weekly)
 	}
 }
 

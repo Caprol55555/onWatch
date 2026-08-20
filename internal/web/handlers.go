@@ -7019,14 +7019,15 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 	// Handle notification settings
 	if raw, ok := body["notifications"]; ok {
 		var notif struct {
-			WarningThreshold  float64            `json:"warning_threshold"`
-			CriticalThreshold float64            `json:"critical_threshold"`
-			NotifyWarning     bool               `json:"notify_warning"`
-			NotifyCritical    bool               `json:"notify_critical"`
-			NotifyReset       bool               `json:"notify_reset"`
-			NotifyAuthError   bool               `json:"notify_auth_error"`
-			CooldownMinutes   int                `json:"cooldown_minutes"`
-			Pace              *notify.PaceConfig `json:"pace,omitempty"`
+			WarningThreshold  float64                               `json:"warning_threshold"`
+			CriticalThreshold float64                               `json:"critical_threshold"`
+			NotifyWarning     bool                                  `json:"notify_warning"`
+			NotifyCritical    bool                                  `json:"notify_critical"`
+			NotifyReset       bool                                  `json:"notify_reset"`
+			NotifyAuthError   bool                                  `json:"notify_auth_error"`
+			CooldownMinutes   int                                   `json:"cooldown_minutes"`
+			Pace              *notify.PaceConfig                    `json:"pace,omitempty"`
+			ProviderPolicies  map[string]notify.ProviderAlertPolicy `json:"provider_policies,omitempty"`
 			Overrides         []struct {
 				QuotaKey       string  `json:"quota_key"`
 				Provider       string  `json:"provider"`
@@ -7061,6 +7062,17 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 		if notif.Pace != nil {
 			if err := notify.ValidatePaceConfig(*notif.Pace); err != nil {
 				respondError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		for provider, policy := range notif.ProviderPolicies {
+			provider = strings.ToLower(strings.TrimSpace(provider))
+			if provider == "" {
+				respondError(w, http.StatusBadRequest, "provider alert policy requires a provider")
+				return
+			}
+			if err := notify.ValidateProviderAlertPolicy(policy); err != nil {
+				respondError(w, http.StatusBadRequest, fmt.Sprintf("invalid alert policy for %s: %v", provider, err))
 				return
 			}
 		}

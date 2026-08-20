@@ -167,6 +167,8 @@ func TestOpenCodeDashboardShowsPaceMarkersAndLocalizesDynamicInsights(t *testing
 	appJS := readStaticAppJS(t)
 	for _, marker := range []string{
 		"quotaThresholdMarkersHTML",
+		"quotaProgressStatus",
+		"paceRawMarker",
 		"paceWarningMarker",
 		"paceCriticalMarker",
 		"insights.burn_rate_title",
@@ -179,7 +181,7 @@ func TestOpenCodeDashboardShowsPaceMarkersAndLocalizesDynamicInsights(t *testing
 		}
 	}
 	i18n := readEmbeddedFile(t, "static/i18n.js")
-	for _, key := range []string{"insights.burn_rate_title", "insights.stable_cycle_desc", "insights.per_hour_metric", "quota.pace_warning_marker", "api_integrations.provider_accounts_separate"} {
+	for _, key := range []string{"insights.burn_rate_title", "insights.stable_cycle_desc", "insights.per_hour_metric", "quota.pace_raw_marker", "quota.pace_warning_marker", "api_integrations.provider_accounts_separate"} {
 		if strings.Count(i18n, "'"+key+"':") != 2 {
 			t.Fatalf("translation key %q must exist in English and Simplified Chinese", key)
 		}
