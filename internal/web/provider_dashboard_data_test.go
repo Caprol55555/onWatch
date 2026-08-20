@@ -180,6 +180,9 @@ func TestOpenCodeDashboardShowsPaceMarkersAndLocalizesDynamicInsights(t *testing
 			t.Fatalf("app.js missing OpenCode dashboard behavior %q", marker)
 		}
 	}
+	if !strings.Contains(appJS, `opencode-aggregate-card" data-provider="opencode"`) {
+		t.Fatal("OpenCode aggregate card must reuse the unclipped single-account marker styling")
+	}
 	i18n := readEmbeddedFile(t, "static/i18n.js")
 	for _, key := range []string{"insights.burn_rate_title", "insights.stable_cycle_desc", "insights.per_hour_metric", "quota.pace_raw_marker", "quota.pace_warning_marker", "api_integrations.provider_accounts_separate"} {
 		if strings.Count(i18n, "'"+key+"':") != 2 {

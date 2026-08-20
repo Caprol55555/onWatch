@@ -4211,11 +4211,9 @@ function quotaProgressStatus(quota, percent) {
   // thresholds are always expressed as utilization, so convert before
   // comparing while keeping the visual marker positions reversed below.
   const utilizationPercent = quota?.cardPercent != null ? 100 - percent : percent;
-  if (Number.isFinite(raw)) {
-    if (Number.isFinite(critical) && utilizationPercent >= critical) return 'pace-critical';
-    if (Number.isFinite(warning) && utilizationPercent >= warning) return 'pace-warning';
-    return 'pace-raw';
-  }
+  if (Number.isFinite(critical) && utilizationPercent >= critical) return 'pace-critical';
+  if (Number.isFinite(warning) && utilizationPercent >= warning) return 'pace-warning';
+  if (Number.isFinite(raw) && utilizationPercent >= raw) return 'pace-raw';
   return quota?.status || getQuotaStatus(percent);
 }
 
@@ -4766,7 +4764,7 @@ function openCodeAggregateCardHTML(aggregate) {
       <div class="aoq-reset">${escapeHTML(tr('opencode.aggregate_risk', { max: (Number(q.maxUtilization) || 0).toFixed(1), account: q.worstAccount || tr('common.unknown'), risk: Number(q.atRiskAccountCount) || 0, projected: (Number(q.averageProjectedUtilization) || pct).toFixed(1) }))}</div>
     </div>`;
   }).join('');
-  return `<article class="account-overview-card opencode-aggregate-card" aria-label="${escapeHTML(tr('opencode.aggregate_title'))}">
+  return `<article class="account-overview-card opencode-aggregate-card" data-provider="opencode" aria-label="${escapeHTML(tr('opencode.aggregate_title'))}">
     <header class="account-overview-header">
       <span class="account-overview-name">${tr('opencode.aggregate_title')}</span>
       <span class="account-overview-badge">${tr('opencode.aggregate_accounts', { sampled: aggregate?.sampledAccountCount || 0, total: aggregate?.accountCount || 0 })}</span>

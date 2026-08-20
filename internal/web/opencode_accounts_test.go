@@ -241,7 +241,9 @@ func TestOpenCodeCurrentAndAggregateExposePaceMarkers(t *testing.T) {
 		t.Fatal(err)
 	}
 	account, _ := s.CreateOpenCodeAccount("Pace", "pace-markers", "cookie", true)
-	reset := time.Now().UTC().Add(7 * 24 * time.Hour)
+	// Keep the reset one day ahead so the seven-day cycle has accumulated a
+	// stable, non-zero amount of working-time progress on every weekday.
+	reset := time.Now().UTC().Add(24 * time.Hour)
 	if _, err := s.InsertOpenCodeSnapshotForAccount(account.AccountID, &api.OpenCodeSnapshot{
 		CapturedAt: time.Now().UTC(),
 		Quotas:     []api.OpenCodeQuota{{Name: "weekly", Utilization: 25, ResetsAt: &reset, Format: api.OpenCodeQuotaFormatPercent}},
@@ -253,14 +255,30 @@ func TestOpenCodeCurrentAndAggregateExposePaceMarkers(t *testing.T) {
 	current := h.buildOpenCodeCurrentForAccount(account.AccountID)
 	quotas := current["quotas"].([]interface{})
 	weekly := quotas[0].(map[string]interface{})
-	if weekly["paceRawMarker"] == nil || weekly["paceWarningMarker"] == nil || weekly["paceCriticalMarker"] == nil || weekly["paceAlertMode"] != "pace" {
+	raw, rawOK := weekly["paceRawMarker"].(float64)
+	warning, warningOK := weekly["paceWarningMarker"].(float64)
+	if !rawOK || raw <= 0 || !warningOK || warning <= raw || weekly["paceCriticalMarker"] == nil || weekly["paceAlertMode"] != "pace" {
 		t.Fatalf("single-account quota missing pace markers: %+v", weekly)
 	}
 
 	rr := httptest.NewRecorder()
 	h.OpenCodeAccountsSummary(rr, httptest.NewRequest(http.MethodGet, "/api/opencode/accounts/summary", nil))
-	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"paceWarningMarker"`) || !strings.Contains(rr.Body.String(), `"paceCriticalMarker"`) {
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"paceRawMarker"`) || !strings.Contains(rr.Body.String(), `"paceWarningMarker"`) || !strings.Contains(rr.Body.String(), `"paceCriticalMarker"`) {
 		t.Fatalf("aggregate summary missing pace markers: %d %s", rr.Code, rr.Body.String())
+	}
+	var payload struct {
+		Aggregate struct {
+			Quotas []struct {
+				Name string  `json:"name"`
+				Raw  float64 `json:"paceRawMarker"`
+			} `json:"quotas"`
+		} `json:"aggregate"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Aggregate.Quotas) != 1 || payload.Aggregate.Quotas[0].Name != "weekly" || payload.Aggregate.Quotas[0].Raw <= 0 {
+		t.Fatalf("aggregate raw work-progress marker=%+v", payload.Aggregate.Quotas)
 	}
 }
 
@@ -282,7 +300,7 @@ func TestOpenCodeMarkersFollowProviderPercentagePolicy(t *testing.T) {
 	h := NewHandler(s, nil, nil, nil, nil)
 	current := h.buildOpenCodeCurrentForAccount(account.AccountID)
 	weekly := current["quotas"].([]interface{})[0].(map[string]interface{})
-	if weekly["paceRawMarker"] != float64(0) || weekly["paceWarningMarker"] != float64(30) || weekly["paceCriticalMarker"] != float64(60) || weekly["paceAlertMode"] != "percentage" {
+	if _, exists := weekly["paceRawMarker"]; exists || weekly["paceWarningMarker"] != float64(30) || weekly["paceCriticalMarker"] != float64(60) || weekly["paceAlertMode"] != "percentage" {
 		t.Fatalf("percentage markers=%+v", weekly)
 	}
 }

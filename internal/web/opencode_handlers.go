@@ -188,6 +188,7 @@ func (h *Handler) buildOpenCodeSummaryAggregate(summaries []store.OpenCodeAccoun
 	type quotaAccumulator struct {
 		total            float64
 		count            int
+		rawTotal         float64
 		warningTotal     float64
 		criticalTotal    float64
 		markerCount      int
@@ -220,8 +221,9 @@ func (h *Handler) buildOpenCodeSummaryAggregate(summaries []store.OpenCodeAccoun
 			if quota.ResetsAt != nil && alertPolicy.Mode == notify.AlertModePace {
 				paceCfg.Warning = alertPolicy.Warning
 				paceCfg.Critical = alertPolicy.Critical
-				warning, critical, _, ok := notify.PaceMarkers(quota.Name, *quota.ResetsAt, paceCfg, now)
+				warning, critical, progress, ok := notify.PaceMarkers(quota.Name, *quota.ResetsAt, paceCfg, now)
 				if ok {
+					value.rawTotal += progress
 					value.warningTotal += warning
 					value.criticalTotal += critical
 					value.markerCount++
@@ -269,7 +271,6 @@ func (h *Handler) buildOpenCodeSummaryAggregate(summaries []store.OpenCodeAccoun
 			"atRiskAccountCount": value.atRiskCount, "exhaustRiskAccountCount": value.exhaustRiskCount,
 		}
 		if isOpenCodePaceQuota(name) && alertPolicy.Mode != notify.AlertModeDisabled {
-			item["paceRawMarker"] = 0.0
 			item["paceAlertMode"] = alertPolicy.Mode
 			if alertPolicy.Mode == notify.AlertModePercentage {
 				item["paceWarningMarker"] = alertPolicy.Warning
@@ -281,6 +282,7 @@ func (h *Handler) buildOpenCodeSummaryAggregate(summaries []store.OpenCodeAccoun
 			item["averageProjectedUtilization"] = value.projectedTotal / float64(value.projectedCount)
 		}
 		if value.markerCount > 0 {
+			item["paceRawMarker"] = value.rawTotal / float64(value.markerCount)
 			item["paceWarningMarker"] = value.warningTotal / float64(value.markerCount)
 			item["paceCriticalMarker"] = value.criticalTotal / float64(value.markerCount)
 			item["paceMarkerSampleCount"] = value.markerCount
@@ -352,7 +354,6 @@ func applyOpenCodePaceMarkers(target map[string]any, quotaName string, resetsAt 
 	if !isOpenCodePaceQuota(quotaName) || policy.Mode == notify.AlertModeDisabled {
 		return
 	}
-	target["paceRawMarker"] = 0.0
 	target["paceAlertMode"] = policy.Mode
 	if policy.Mode == notify.AlertModePercentage {
 		target["paceWarningMarker"] = policy.Warning
@@ -365,6 +366,7 @@ func applyOpenCodePaceMarkers(target map[string]any, quotaName string, resetsAt 
 	if !ok {
 		return
 	}
+	target["paceRawMarker"] = progress
 	target["paceWarningMarker"] = warning
 	target["paceCriticalMarker"] = critical
 	target["paceWorkProgress"] = progress
